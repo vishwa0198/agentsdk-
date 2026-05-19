@@ -1,0 +1,6 @@
+.env
+.agentsdk/
+__pycache__/
+dist/
+*.egg-info/
+.conda/

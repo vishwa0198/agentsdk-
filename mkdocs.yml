@@ -1,0 +1,40 @@
+site_name: agentsdk
+site_description: A lightweight Python SDK for building AI agents
+site_url: https://vishwa0198.github.io/agentsdk
+repo_url: https://github.com/vishwa0198/agentsdk
+repo_name: agentsdk
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: indigo
+    accent: indigo
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quickstart: quickstart.md
+    - Installation: installation.md
+  - Concepts:
+    - Agent loop: concepts/agent-loop.md
+    - Tools: concepts/tools.md
+    - Multi-agent: concepts/multi-agent.md
+    - Persistence: concepts/persistence.md
+    - Observability: concepts/observability.md
+  - Cookbook:
+    - Research agent: cookbook/research-agent.md
+    - Coding agent: cookbook/coding-agent.md
+    - Multi-agent pipeline: cookbook/multi-agent-pipeline.md
+  - API Reference: api-reference.md

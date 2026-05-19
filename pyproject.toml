@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentsdk"
+version = "0.1.0"
+description = "A lightweight Python SDK for building AI agents"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "aiofiles>=23.0",
+    "groq>=0.9",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.24",
+    "opentelemetry-sdk>=1.24",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+scaffold-agent = "agentsdk.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentsdk*"]
