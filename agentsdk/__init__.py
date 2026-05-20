@@ -19,7 +19,7 @@ from agentsdk.graph.bus import MessageBus, BusAwareAgent, BusRunner
 from agentsdk.persistence.file_store import FileCheckpointStore
 from agentsdk.persistence.session import SessionManager
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     # Core agent

@@ -3,12 +3,19 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentsdk"
-version = "0.1.0"
-description = "A lightweight Python SDK for building AI agents"
+name = "agentsdk-py"
+version = "0.1.1"
+description = "A lightweight Python SDK for building AI agents with tools, memory, and multi-agent pipelines — powered by Groq"
 readme = "README.md"
-requires-python = ">=3.12"
-license = {text = "MIT"}
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["ai", "agents", "llm", "groq", "sdk", "multi-agent", "react-agent", "tool-use"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
     "pydantic>=2.0",
@@ -30,9 +37,18 @@ dev = [
     "python-dotenv>=1.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/vishwa0198/agentsdk"
+Documentation = "https://vishwa0198.github.io/agentsdk"
+Repository = "https://github.com/vishwa0198/agentsdk"
+Changelog = "https://github.com/vishwa0198/agentsdk/blob/main/CHANGELOG.md"
+
 [project.scripts]
 scaffold-agent = "agentsdk.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agentsdk*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
