@@ -13,8 +13,14 @@ The agent loop only ever calls ``LLMProvider.complete()``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import random
+import re
+import time
+import uuid
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
@@ -95,8 +101,216 @@ _FINISH_REASON_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# RetryConfig + CircuitBreaker + RetryableLLMProvider
+# ---------------------------------------------------------------------------
+
+
+class RetryConfig(BaseModel):
+    """Configuration for retry behaviour and the circuit breaker.
+
+    Attributes:
+        max_retries: Maximum number of retry attempts on rate-limit errors.
+        base_delay: Initial backoff delay in seconds (doubles each retry).
+        max_delay: Upper cap on backoff delay in seconds.
+        circuit_breaker_threshold: Consecutive failures before the circuit opens.
+        circuit_breaker_timeout: Seconds to wait before attempting recovery.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    max_retries: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    circuit_breaker_threshold: int = 5
+    circuit_breaker_timeout: float = 60.0
+
+
+class _CBState(str, Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class CircuitBreaker:
+    """Three-state circuit breaker: CLOSED → OPEN → HALF_OPEN → CLOSED.
+
+    Args:
+        threshold: Consecutive failures before the circuit opens.
+        timeout: Seconds in OPEN state before transitioning to HALF_OPEN.
+    """
+
+    def __init__(self, threshold: int = 5, timeout: float = 60.0) -> None:
+        self._threshold = threshold
+        self._timeout = timeout
+        self._failures = 0
+        self._state = _CBState.CLOSED
+        self._opened_at: float | None = None
+
+    def is_open(self) -> bool:
+        """Return True when calls should be rejected (circuit is OPEN)."""
+        if self._state == _CBState.CLOSED:
+            return False
+        if self._state == _CBState.OPEN:
+            if time.monotonic() - (self._opened_at or 0.0) >= self._timeout:
+                self._state = _CBState.HALF_OPEN
+                return False
+            return True
+        # HALF_OPEN: allow one probe call through
+        return False
+
+    def record_success(self) -> None:
+        """Reset failure count and close the circuit."""
+        self._failures = 0
+        self._state = _CBState.CLOSED
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        """Increment failure count; open the circuit if threshold is reached."""
+        self._failures += 1
+        if self._state == _CBState.HALF_OPEN:
+            # Failed during recovery probe → back to OPEN
+            self._state = _CBState.OPEN
+            self._opened_at = time.monotonic()
+        elif self._failures >= self._threshold:
+            self._state = _CBState.OPEN
+            self._opened_at = time.monotonic()
+
+
+class _BoundProvider:
+    """Thin adapter so RetryableLLMProvider can wrap a bound method."""
+
+    __slots__ = ("_fn",)
+
+    def __init__(self, fn: Any) -> None:
+        self._fn = fn
+
+    async def complete(
+        self,
+        history: MessageHistory,
+        tools: list[ToolSchema] | None = None,
+        max_tokens: int = 1024,
+    ) -> LLMResponse:
+        return await self._fn(history, tools, max_tokens)
+
+
+class RetryableLLMProvider:
+    """Wraps any LLMProvider with exponential backoff and a circuit breaker.
+
+    Args:
+        provider: Any object satisfying the LLMProvider protocol.
+        config: RetryConfig controlling delays and circuit-breaker thresholds.
+
+    Example::
+
+        llm = RetryableLLMProvider(
+            provider=GroqProvider(api_key="..."),
+            config=RetryConfig(max_retries=5, base_delay=0.5),
+        )
+    """
+
+    def __init__(
+        self,
+        provider: LLMProvider,
+        config: RetryConfig | None = None,
+    ) -> None:
+        self._provider = provider
+        self._config = config or RetryConfig()
+        self._circuit = CircuitBreaker(
+            threshold=self._config.circuit_breaker_threshold,
+            timeout=self._config.circuit_breaker_timeout,
+        )
+
+    async def complete(
+        self,
+        history: MessageHistory,
+        tools: list[ToolSchema] | None = None,
+        max_tokens: int = 1024,
+    ) -> LLMResponse:
+        """Call the wrapped provider with retry and circuit-breaker logic."""
+        if self._circuit.is_open():
+            raise LLMProviderError(
+                "Circuit breaker OPEN — too many consecutive failures. "
+                f"Retry after {self._config.circuit_breaker_timeout}s."
+            )
+
+        last_exc: Exception | None = None
+
+        for attempt in range(self._config.max_retries + 1):
+            try:
+                result = await self._provider.complete(history, tools, max_tokens)
+                self._circuit.record_success()
+                return result
+            except LLMAuthError:
+                # Auth errors are never retried and don't count against the circuit.
+                raise
+            except LLMRateLimitError as exc:
+                last_exc = exc
+                if attempt < self._config.max_retries:
+                    delay = min(
+                        self._config.base_delay * (2 ** attempt),
+                        self._config.max_delay,
+                    )
+                    jitter = random.uniform(0, 0.1 * delay)
+                    await asyncio.sleep(delay + jitter)
+
+        self._circuit.record_failure()
+        raise last_exc  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
 # Groq provider
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# XML text-mode tool-call parser
+# ---------------------------------------------------------------------------
+
+_XML_TOOL_RE = re.compile(r"<function/(\w+)")
+
+
+def _parse_xml_tool_calls(content: str) -> list[ToolCall]:
+    """Parse LLaMA-style XML tool calls from plain-text model content.
+
+    Handles the format emitted by some Groq-hosted models when they fall back
+    to their internal chat-template tool-calling syntax::
+
+        <function/tool_name{"arg1": "val1", "arg2": 42}></function>
+
+    Uses :meth:`json.JSONDecoder.raw_decode` to robustly handle JSON objects
+    whose string values may themselves contain ``{`` / ``}`` characters
+    (e.g. Python code blocks).
+
+    Returns an empty list when no valid tool calls are found.
+    """
+    decoder = json.JSONDecoder()
+    tool_calls: list[ToolCall] = []
+
+    for match in _XML_TOOL_RE.finditer(content):
+        name = match.group(1)
+        json_start = match.end()
+
+        # Expect the JSON object to start immediately after the tool name.
+        if json_start >= len(content) or content[json_start] != "{":
+            continue
+
+        try:
+            arguments, _ = decoder.raw_decode(content, json_start)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(arguments, dict):
+            continue
+
+        tool_calls.append(
+            ToolCall(
+                id=f"xml_{uuid.uuid4().hex[:8]}",
+                name=name,
+                arguments=arguments,
+            )
+        )
+
+    return tool_calls
 
 
 class GroqProvider:
@@ -117,6 +331,7 @@ class GroqProvider:
         self,
         api_key: str | None = None,
         model: str = "llama-3.3-70b-versatile",
+        retry_config: RetryConfig | None = None,
     ) -> None:
         try:
             import groq as _groq
@@ -132,6 +347,11 @@ class GroqProvider:
         self._client = AsyncGroq(api_key=resolved_key)
         # Keep a reference to the module so complete() can catch its errors.
         self._groq = _groq
+        # Wrap with retry/circuit-breaker if a config was provided.
+        self._retry_wrapper: RetryableLLMProvider | None = (
+            RetryableLLMProvider(_BoundProvider(self._complete_once), retry_config)
+            if retry_config else None
+        )
 
     async def complete(
         self,
@@ -139,7 +359,18 @@ class GroqProvider:
         tools: list[ToolSchema] | None = None,
         max_tokens: int = 1024,
     ) -> LLMResponse:
-        """Send *history* to Groq and return a normalised :class:`LLMResponse`."""
+        """Send *history* to Groq, optionally via retry/circuit-breaker wrapper."""
+        if self._retry_wrapper is not None:
+            return await self._retry_wrapper.complete(history, tools, max_tokens)
+        return await self._complete_once(history, tools, max_tokens)
+
+    async def _complete_once(
+        self,
+        history: MessageHistory,
+        tools: list[ToolSchema] | None = None,
+        max_tokens: int = 1024,
+    ) -> LLMResponse:
+        """Single (non-retried) call to the Groq API."""
         kwargs: dict[str, Any] = {
             "model": self._model,
             # to_dict_list() already produces OpenAI-compatible dicts, which
@@ -173,14 +404,15 @@ class GroqProvider:
         choice = response.choices[0]
         raw_msg = choice.message
         finish_reason: str = choice.finish_reason or "stop"
+        content: str = raw_msg.content or ""
 
         # Parse tool calls from the response into SDK-native ToolCall objects.
         parsed_tool_calls: list[ToolCall] = []
         if raw_msg.tool_calls:
             for tc in raw_msg.tool_calls:
                 try:
-                    # arguments may be None for zero-parameter tools; fall back to {}
-                    arguments: dict[str, Any] = json.loads(tc.function.arguments or "{}")
+                    # arguments may be None or JSON null for zero-parameter tools.
+                    arguments: dict[str, Any] = json.loads(tc.function.arguments or "{}") or {}
                 except (json.JSONDecodeError, TypeError):
                     # Malformed JSON from the model — preserve raw string.
                     arguments = {"_raw": tc.function.arguments}
@@ -192,9 +424,22 @@ class GroqProvider:
                     )
                 )
 
+        # ── XML text-mode tool-call fallback ──────────────────────────────
+        # Some Groq-hosted LLaMA variants fall back to their internal chat-
+        # template format and emit tool calls as plain text:
+        #   <function/tool_name{"arg": "val"}></function>
+        # When no structured tool_calls were parsed but the content contains
+        # this pattern, convert them to proper ToolCall objects so the agent
+        # loop can dispatch them normally.
+        if not parsed_tool_calls and "<function/" in content:
+            parsed_tool_calls = _parse_xml_tool_calls(content)
+            if parsed_tool_calls:
+                finish_reason = "tool_calls"  # treat as tool_use
+                content = ""  # strip raw XML from the visible thought
+
         ai_message = AIMessage(
             # content may be None when the model only emits tool calls.
-            content=raw_msg.content or "",
+            content=content,
             tool_calls=parsed_tool_calls,
         )
 

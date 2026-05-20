@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] — 2026-05-20
+
+### Added
+- Docker sandbox for `run_python` — no network, read-only filesystem, 128 MB memory cap
+- `RetryableLLMProvider` — exponential backoff with jitter on rate-limit errors
+- `CircuitBreaker` — auto-opens after 5 consecutive failures, recovers after 60 s
+- `RetryConfig` — configurable retry and circuit-breaker settings
+- Integration test suite — 8 tests hitting real Groq API
+
+### Changed
+- `run_python` now requires Docker by default. Set `AGENTSDK_UNSAFE_PYTHON=1` to use the old subprocess method
+
 ## [0.1.0] — 2026-05-19
 
 ### Added

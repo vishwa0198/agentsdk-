@@ -146,6 +146,9 @@ class Agent:
             self._tools.extend(registry.all())
         # O(1) lookup by tool name during dispatch
         self._tool_map: dict[str, BaseTool] = {t.schema.name: t for t in self._tools}
+        # Optional async streaming callback: (event_type: str, data: dict) -> None
+        # Set before calling run() to receive per-step events for WebSocket streaming.
+        self._step_callback: Any | None = None
 
     # ------------------------------------------------------------------
     # Core run loop
@@ -231,6 +234,19 @@ class Agent:
                     for tc in ai_message.tool_calls:
                         print(f"  → tool_call: {tc.name}({tc.arguments})")
 
+                # ── streaming callback: step + tool_call events ────────────
+                if self._step_callback is not None:
+                    await self._step_callback("step", {
+                        "iteration": iteration,
+                        "thought": ai_message.content,
+                        "stop_reason": response.stop_reason,
+                    })
+                    for tc in ai_message.tool_calls:
+                        await self._step_callback("tool_call", {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        })
+
                 # ── clean exit ─────────────────────────────────────────────
                 if is_final:
                     output = ai_message.content
@@ -251,6 +267,14 @@ class Agent:
                             content=result_content,
                             is_error=is_error,
                         )
+
+                        # ── streaming callback: tool_result event ─────────
+                        if self._step_callback is not None:
+                            await self._step_callback("tool_result", {
+                                "name": tc.name,
+                                "result": result_content[:2000],
+                                "is_error": is_error,
+                            })
 
                 # If stop_reason is "max_tokens" or another non-final reason
                 # with no tool calls, the loop continues to let the model
@@ -276,6 +300,15 @@ class Agent:
             )
         elif self._memory and session_id:
             await self._memory.save(session_id, history)
+
+        # ── 5. Streaming final event ───────────────────────────────────────
+        if self._step_callback is not None:
+            await self._step_callback("final", {
+                "output": output,
+                "steps": len(steps),
+                "tokens": {"input": total_input, "output": total_output},
+                "stopped_by": stopped_by,
+            })
 
         return AgentResult(
             output=output,

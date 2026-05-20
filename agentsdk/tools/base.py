@@ -197,13 +197,13 @@ def tool(func: Callable[..., Awaitable[str]]) -> FunctionTool:
         if param.default is inspect.Parameter.empty:
             required.append(param_name)
 
+    params: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        params["required"] = required
+
     tool_schema = ToolSchema(
         name=name,
         description=description,
-        parameters={
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        },
+        parameters=params,
     )
     return FunctionTool(fn=func, tool_schema=tool_schema)
