@@ -1,29 +1,89 @@
 import { useState, useEffect, useCallback } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import SessionSidebar from './components/SessionSidebar.jsx'
 import ChatWindow from './components/ChatWindow.jsx'
 import ToolCallTrace from './components/ToolCallTrace.jsx'
 import TokenCounter from './components/TokenCounter.jsx'
+import LoginPage from './pages/LoginPage.jsx'
+import AgentConfigPage from './pages/AgentConfigPage.jsx'
+import { getMe, getSessions, deleteSession, createWebSocket } from './lib/api.js'
+import api from './lib/api.js'
 import './index.css'
 
+const queryClient = new QueryClient()
+
+// ---------------------------------------------------------------------------
+// Auth guard
+// ---------------------------------------------------------------------------
+function PrivateRoute({ children }) {
+  const token = localStorage.getItem('agentsdk_token')
+  return token ? children : <Navigate to="/login" replace />
+}
+
+// ---------------------------------------------------------------------------
+// Top nav (shown on protected pages)
+// ---------------------------------------------------------------------------
+function TopNav({ onToggleSidebar, onToggleTrace, tokenStats }) {
+  const navigate = useNavigate()
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => getMe().then(r => r.data), retry: false })
+
+  const signOut = () => {
+    localStorage.removeItem('agentsdk_token')
+    queryClient.clear()
+    navigate('/login')
+  }
+
+  return (
+    <header className="topbar">
+      <button className="icon-btn" onClick={onToggleSidebar} title="Toggle sidebar">☰</button>
+      <span className="topbar-title">agentsdk</span>
+      <nav style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <NavLink to="/" end style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Chat</NavLink>
+        <NavLink to="/agents" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Agents</NavLink>
+      </nav>
+      <div className="topbar-right">
+        <TokenCounter stats={tokenStats} />
+        <button className="icon-btn" onClick={onToggleTrace} title="Toggle tool trace">🔧</button>
+        {me && (
+          <span style={{ fontSize: 12, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--border)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+            {me.username}
+          </span>
+        )}
+        <button className="icon-btn" onClick={signOut} title="Sign out" style={{ fontSize: 12 }}>Sign out</button>
+      </div>
+    </header>
+  )
+}
+
+const navStyle = {
+  padding: '4px 12px',
+  borderRadius: 6,
+  fontSize: 13,
+  fontWeight: 500,
+  color: 'var(--text-1)',
+  textDecoration: 'none',
+  transition: 'all 0.15s',
+}
+
+// ---------------------------------------------------------------------------
+// Main chat view
+// ---------------------------------------------------------------------------
 const AGENT_NAME = 'WebAgent'
 
-export default function App() {
+function ChatView({ sidebarOpen, traceOpen, setTraceOpen, tokenStats, setTokenStats }) {
   const [sessions, setSessions] = useState([])
   const [activeSession, setActiveSession] = useState(null)
   const [messages, setMessages] = useState([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [toolCalls, setToolCalls] = useState([])
-  const [tokenStats, setTokenStats] = useState({ input: 0, output: 0 })
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [traceOpen, setTraceOpen] = useState(true)
 
-  // ── Session management ────────────────────────────────────────────────
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await fetch(`/sessions/${AGENT_NAME}`)
-      if (res.ok) setSessions(await res.json())
+      const res = await getSessions(AGENT_NAME)
+      setSessions(res.data)
     } catch {
-      // Backend not yet ready; silently ignore.
+      // Backend not yet ready
     }
   }, [])
 
@@ -45,7 +105,7 @@ export default function App() {
   }
 
   const handleDeleteSession = async (sessionId) => {
-    await fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
+    await deleteSession(sessionId)
     if (activeSession === sessionId) {
       setActiveSession(null)
       setMessages([])
@@ -54,60 +114,39 @@ export default function App() {
     fetchSessions()
   }
 
-  // ── WebSocket streaming ───────────────────────────────────────────────
   const handleSend = useCallback(async (text) => {
     if (!activeSession || !text.trim() || isStreaming) return
-
     setIsStreaming(true)
     setToolCalls([])
 
     const userMsgId = Date.now()
     const assistantMsgId = userMsgId + 1
 
-    setMessages(prev => [
-      ...prev,
-      { id: userMsgId, role: 'user', content: text },
-    ])
+    setMessages(prev => [...prev, { id: userMsgId, role: 'user', content: text }])
 
-    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${wsProto}//${window.location.host}/ws/${activeSession}`)
+    const ws = createWebSocket(activeSession)
     let assistantAdded = false
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ message: text, agent_name: AGENT_NAME }))
-    }
+    ws.onopen = () => ws.send(JSON.stringify({ message: text, agent_name: AGENT_NAME }))
 
     ws.onmessage = (e) => {
       const event = JSON.parse(e.data)
 
       if (event.type === 'step') {
         if (!assistantAdded) {
-          setMessages(prev => [
-            ...prev,
-            { id: assistantMsgId, role: 'assistant', content: '', thinking: true, tokens: null },
-          ])
+          setMessages(prev => [...prev, { id: assistantMsgId, role: 'assistant', content: '', thinking: true, tokens: null }])
           assistantAdded = true
         }
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === assistantMsgId
-              ? { ...m, thought: event.data.thought }
-              : m,
-          ),
-        )
+        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, thought: event.data.thought } : m))
       }
 
       if (event.type === 'tool_call') {
-        setToolCalls(prev => [
-          ...prev,
-          { id: Date.now() + Math.random(), ...event.data, result: null, isError: false },
-        ])
+        setToolCalls(prev => [...prev, { id: Date.now() + Math.random(), ...event.data, result: null, isError: false }])
       }
 
       if (event.type === 'tool_result') {
         setToolCalls(prev => {
           const updated = [...prev]
-          // Find the last unresolved call with this name and fill in its result.
           for (let i = updated.length - 1; i >= 0; i--) {
             if (updated[i].name === event.data.name && updated[i].result === null) {
               updated[i] = { ...updated[i], result: event.data.result, isError: event.data.is_error }
@@ -120,110 +159,97 @@ export default function App() {
 
       if (event.type === 'final') {
         const tok = event.data.tokens ?? {}
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === assistantMsgId
-              ? { ...m, content: event.data.output, thinking: false, tokens: tok }
-              : m,
-          ),
-        )
-        setTokenStats(prev => ({
-          input: prev.input + (tok.input ?? 0),
-          output: prev.output + (tok.output ?? 0),
-        }))
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMsgId ? { ...m, content: event.data.output, thinking: false, tokens: tok } : m
+        ))
+        setTokenStats(prev => ({ input: prev.input + (tok.input ?? 0), output: prev.output + (tok.output ?? 0) }))
         setIsStreaming(false)
         ws.close()
         fetchSessions()
       }
 
       if (event.type === 'error') {
-        if (!assistantAdded) {
-          setMessages(prev => [
-            ...prev,
-            { id: assistantMsgId, role: 'assistant', content: '', thinking: false, tokens: null },
-          ])
-        }
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === assistantMsgId
-              ? { ...m, content: `⚠ ${event.data.message}`, thinking: false, isError: true }
-              : m,
-          ),
-        )
+        if (!assistantAdded) setMessages(prev => [...prev, { id: assistantMsgId, role: 'assistant', content: '', thinking: false, tokens: null }])
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMsgId ? { ...m, content: `⚠ ${event.data.message}`, thinking: false, isError: true } : m
+        ))
         setIsStreaming(false)
         ws.close()
       }
     }
 
     ws.onerror = () => {
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === assistantMsgId
-            ? { ...m, content: '⚠ Connection error. Please try again.', thinking: false, isError: true }
-            : m,
-        ),
-      )
+      setMessages(prev => prev.map(m =>
+        m.id === assistantMsgId ? { ...m, content: '⚠ Connection error. Please try again.', thinking: false, isError: true } : m
+      ))
       setIsStreaming(false)
     }
 
     ws.onclose = () => setIsStreaming(false)
-  }, [activeSession, isStreaming, fetchSessions])
+  }, [activeSession, isStreaming, fetchSessions, onChatComplete])
 
-  // ── Render ────────────────────────────────────────────────────────────
+  return (
+    <div className="main-layout">
+      {sidebarOpen && (
+        <SessionSidebar
+          sessions={sessions}
+          activeSession={activeSession}
+          onSelect={handleSelectSession}
+          onNew={handleNewSession}
+          onDelete={handleDeleteSession}
+        />
+      )}
+      <main className="chat-area">
+        {activeSession ? (
+          <ChatWindow messages={messages} isStreaming={isStreaming} onSend={handleSend} sessionId={activeSession} />
+        ) : (
+          <div className="empty-state">
+            <p>Select a session or create a new one to start chatting.</p>
+            <button className="btn-primary" onClick={handleNewSession}>New Session</button>
+          </div>
+        )}
+      </main>
+      {traceOpen && toolCalls.length > 0 && (
+        <aside className="trace-panel">
+          <ToolCallTrace toolCalls={toolCalls} />
+        </aside>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Root app with routing
+// ---------------------------------------------------------------------------
+function AppShell() {
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [traceOpen, setTraceOpen] = useState(true)
+  const [tokenStats, setTokenStats] = useState({ input: 0, output: 0 })
+
   return (
     <div className="app">
-      <header className="topbar">
-        <button className="icon-btn" onClick={() => setSidebarOpen(o => !o)} title="Toggle sidebar">
-          ☰
-        </button>
-        <span className="topbar-title">agentsdk &mdash; {AGENT_NAME}</span>
-        <div className="topbar-right">
-          <TokenCounter stats={tokenStats} />
-          <button
-            className="icon-btn"
-            onClick={() => setTraceOpen(o => !o)}
-            title="Toggle tool trace"
-          >
-            🔧
-          </button>
-        </div>
-      </header>
-
-      <div className="main-layout">
-        {sidebarOpen && (
-          <SessionSidebar
-            sessions={sessions}
-            activeSession={activeSession}
-            onSelect={handleSelectSession}
-            onNew={handleNewSession}
-            onDelete={handleDeleteSession}
-          />
-        )}
-
-        <main className="chat-area">
-          {activeSession ? (
-            <ChatWindow
-              messages={messages}
-              isStreaming={isStreaming}
-              onSend={handleSend}
-              sessionId={activeSession}
-            />
-          ) : (
-            <div className="empty-state">
-              <p>Select a session or create a new one to start chatting.</p>
-              <button className="btn-primary" onClick={handleNewSession}>
-                New Session
-              </button>
-            </div>
-          )}
-        </main>
-
-        {traceOpen && toolCalls.length > 0 && (
-          <aside className="trace-panel">
-            <ToolCallTrace toolCalls={toolCalls} />
-          </aside>
-        )}
-      </div>
+      <TopNav
+        onToggleSidebar={() => setSidebarOpen(o => !o)}
+        onToggleTrace={() => setTraceOpen(o => !o)}
+        tokenStats={tokenStats}
+      />
+      <Routes>
+        <Route path="/" element={<ChatView sidebarOpen={sidebarOpen} traceOpen={traceOpen} setTraceOpen={setTraceOpen} tokenStats={tokenStats} setTokenStats={setTokenStats} />} />
+        <Route path="/agents" element={<AgentConfigPage />} />
+      </Routes>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/*" element={<PrivateRoute><AppShell /></PrivateRoute>} />
+        </Routes>
+      </BrowserRouter>
+    </QueryClientProvider>
   )
 }

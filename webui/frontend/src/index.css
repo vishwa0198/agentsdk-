@@ -1,6 +1,12 @@
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── Spinner ─────────────────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Nav active state ────────────────────────────────────────────────────── */
+.nav-active { color: var(--text-0) !important; background: var(--bg-3); }
+
 /* ── Design tokens ───────────────────────────────────────────────────────── */
 :root {
   --bg-0: #0d0d14;

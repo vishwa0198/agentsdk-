@@ -67,8 +67,11 @@ class AgentManager:
         if session_id in self._agents:
             return self._agents[session_id]
 
+        # ChromaDB collection names must match [a-zA-Z0-9._-] and be 3-512 chars.
+        # Replace colons (used for user-namespacing) with double underscores.
+        chroma_name = session_id.replace(":", "__")
         # ── per-session vector store ──────────────────────────────────────
-        store = VectorMemoryStore(collection_name=session_id)
+        store = VectorMemoryStore(collection_name=chroma_name)
         memory = RAGMemory(store=store, max_messages=20)
 
         # ── persistence ───────────────────────────────────────────────────
