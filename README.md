@@ -1,5 +1,10 @@
 # agentsdk
 
+[![PyPI version](https://badge.fury.io/py/agentsdk-py.svg)](https://pypi.org/project/agentsdk-py/)
+[![Python](https://img.shields.io/pypi/pyversions/agentsdk-py)](https://pypi.org/project/agentsdk-py/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-live-blue)](https://vishwa0198.github.io/agentsdk)
+
 A lightweight Python SDK for building AI agents with tool use, multi-agent graphs, persistence, and tracing.
 
 ## Install
