@@ -22,7 +22,7 @@ from agentsdk.memory.embedder import LocalEmbedder, GroqEmbedder
 from agentsdk.memory.vector_store import VectorMemoryStore
 from agentsdk.memory.rag_memory import RAGMemory
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core agent

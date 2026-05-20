@@ -14,14 +14,17 @@ imported and registered selectively.
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import functools
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import aiofiles
 import httpx
@@ -282,6 +285,372 @@ async def ingest_document(path: str, session_id: str) -> str:
 
     return f"Ingested {len(chunks)} chunks from {path}"
 
+
+# ---------------------------------------------------------------------------
+# 7. GitHub tools
+# ---------------------------------------------------------------------------
+
+_GITHUB_API = "https://api.github.com"
+
+
+def _github_headers() -> dict[str, str]:
+    token = os.environ.get("GITHUB_TOKEN", "")
+    headers: dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+@tool
+async def github_get_repo(owner: str, repo: str) -> str:
+    """Get basic info about a GitHub repository: description, stars, forks, open issues, default branch."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{_GITHUB_API}/repos/{owner}/{repo}",
+                headers=_github_headers(),
+            )
+        except httpx.RequestError as exc:
+            return f"Error: {exc}"
+
+    if resp.status_code == 404:
+        return "Error: repo not found"
+    if resp.status_code == 401:
+        return "Error: invalid or missing GITHUB_TOKEN"
+    if not resp.is_success:
+        return f"Error: {resp.status_code} from GitHub API"
+
+    d = resp.json()
+    return (
+        f"{owner}/{repo} — {d.get('description') or 'No description'}\n"
+        f"Stars: {d.get('stargazers_count', 0)} | "
+        f"Forks: {d.get('forks_count', 0)} | "
+        f"Open issues: {d.get('open_issues_count', 0)}\n"
+        f"Default branch: {d.get('default_branch', 'main')}"
+    )
+
+
+@tool
+async def github_list_issues(owner: str, repo: str, state: str) -> str:
+    """List open or closed issues for a GitHub repo. state must be 'open' or 'closed'."""
+    if state not in ("open", "closed"):
+        return "Error: state must be 'open' or 'closed'"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{_GITHUB_API}/repos/{owner}/{repo}/issues",
+                params={"state": state, "per_page": 10},
+                headers=_github_headers(),
+            )
+        except httpx.RequestError as exc:
+            return f"Error: {exc}"
+
+    if resp.status_code == 404:
+        return "Error: repo not found"
+    if not resp.is_success:
+        return f"Error: {resp.status_code} from GitHub API"
+
+    issues = resp.json()
+    if not issues:
+        return f"No {state} issues found"
+
+    lines = []
+    for issue in issues:
+        user = issue.get("user", {}).get("login", "unknown")
+        lines.append(
+            f"#{issue['number']} [{issue['state']}] {issue['title']} — {user}\n"
+            f"  {issue['html_url']}"
+        )
+    return "\n".join(lines)
+
+
+@tool
+async def github_create_issue(owner: str, repo: str, title: str, body: str) -> str:
+    """Create a new issue in a GitHub repository."""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        return "Error: GITHUB_TOKEN required"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(
+                f"{_GITHUB_API}/repos/{owner}/{repo}/issues",
+                json={"title": title, "body": body},
+                headers=_github_headers(),
+            )
+        except httpx.RequestError as exc:
+            return f"Error: {exc}"
+
+    if resp.status_code == 401:
+        return "Error: invalid GITHUB_TOKEN"
+    if resp.status_code == 404:
+        return "Error: repo not found"
+    if not resp.is_success:
+        return f"Error: {resp.status_code} from GitHub API"
+
+    d = resp.json()
+    return f"Created issue #{d['number']}: {d['html_url']}"
+
+
+@tool
+async def github_get_file(owner: str, repo: str, path: str) -> str:
+    """Get the contents of a file from a GitHub repository."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{path}",
+                headers=_github_headers(),
+            )
+        except httpx.RequestError as exc:
+            return f"Error: {exc}"
+
+    if resp.status_code == 404:
+        return f"Error: file not found: {path}"
+    if not resp.is_success:
+        return f"Error: {resp.status_code} from GitHub API"
+
+    d = resp.json()
+    encoded = d.get("content", "")
+    # GitHub base64-encodes content with newlines; strip them before decoding.
+    content = base64.b64decode(encoded.replace("\n", "")).decode(errors="replace")
+    return content[:4000]
+
+
+# ---------------------------------------------------------------------------
+# 8. Web scraping tools
+# ---------------------------------------------------------------------------
+
+_SCRAPER_UA = "Mozilla/5.0 (compatible; agentsdk-scraper/1.0)"
+
+
+@tool
+async def scrape_webpage(url: str, selector: str) -> str:
+    """Fetch a webpage and extract text content. selector is a CSS selector (e.g. 'article', 'main', 'body') — use 'body' to get all text."""
+    try:
+        from bs4 import BeautifulSoup  # type: ignore[import]
+    except ImportError:
+        return "Error: beautifulsoup4 not installed. Run: pip install beautifulsoup4"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=True,
+            headers={"User-Agent": _SCRAPER_UA},
+        ) as client:
+            resp = await client.get(url)
+    except httpx.TimeoutException:
+        return f"Error: timeout fetching {url}"
+    except httpx.RequestError as exc:
+        return f"Error: {exc}"
+
+    if not resp.is_success:
+        return f"Error: {resp.status_code} fetching {url}"
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Remove noise tags.
+    for tag in soup.find_all(["script", "style", "nav", "footer"]):
+        tag.decompose()
+
+    # Try requested selector, fall back to body.
+    elements = soup.select(selector)
+    root = elements[0] if elements else soup.body
+    if root is None:
+        root = soup
+
+    text = root.get_text(separator="\n", strip=True)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text[:5000]
+
+
+@tool
+async def extract_links(url: str) -> str:
+    """Fetch a webpage and return all hyperlinks found on the page."""
+    try:
+        from bs4 import BeautifulSoup  # type: ignore[import]
+    except ImportError:
+        return "Error: beautifulsoup4 not installed. Run: pip install beautifulsoup4"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=True,
+            headers={"User-Agent": _SCRAPER_UA},
+        ) as client:
+            resp = await client.get(url)
+    except httpx.TimeoutException:
+        return f"Error: timeout fetching {url}"
+    except httpx.RequestError as exc:
+        return f"Error: {exc}"
+
+    if not resp.is_success:
+        return f"Error: {resp.status_code} fetching {url}"
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    seen: set[str] = set()
+    lines: list[str] = []
+
+    for a in soup.find_all("a", href=True):
+        href: str = urljoin(url, a["href"])
+        parsed = urlparse(href)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        # Normalise: drop fragment.
+        href = parsed._replace(fragment="").geturl()
+        if href in seen:
+            continue
+        seen.add(href)
+        text = (a.get_text(strip=True) or "[no text]")[:50]
+        lines.append(f"{text} — {href}")
+        if len(lines) >= 30:
+            break
+
+    return "\n".join(lines) if lines else "No links found"
+
+
+# ---------------------------------------------------------------------------
+# 9. SQL tools
+# ---------------------------------------------------------------------------
+
+_DESTRUCTIVE_RE = re.compile(
+    r"^\s*(DROP|TRUNCATE|ALTER)\b"
+    r"|^\s*DELETE\s+FROM\b(?!.*\bWHERE\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _format_table(columns: list[str], rows: list[tuple]) -> str:  # type: ignore[type-arg]
+    """Render a markdown table from column names and row data."""
+    if not rows:
+        return "No results"
+    header = "| " + " | ".join(columns) + " |"
+    sep = "| " + " | ".join("---" for _ in columns) + " |"
+    data_rows = [
+        "| " + " | ".join(str(v)[:30] for v in row) + " |"
+        for row in rows
+    ]
+    return "\n".join([header, sep, *data_rows])
+
+
+@tool
+async def sql_query(database_url: str, query: str) -> str:
+    """Run a SQL query against a SQLite or PostgreSQL database. Returns results as a formatted table."""
+    # Safety: reject destructive statements.
+    if _DESTRUCTIVE_RE.match(query):
+        return (
+            "Error: destructive statements not allowed. "
+            "Use SELECT, INSERT, or UPDATE with WHERE."
+        )
+
+    if database_url.startswith("sqlite:///"):
+        path = database_url[len("sqlite:///"):]
+        try:
+            import aiosqlite  # type: ignore[import]
+        except ImportError:
+            return "Error: aiosqlite not installed. Run: pip install aiosqlite"
+        try:
+            async with aiosqlite.connect(path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(query) as cursor:
+                    rows = await cursor.fetchmany(50)
+                    if not rows:
+                        return "No results"
+                    columns = list(rows[0].keys())
+                    return _format_table(columns, [tuple(r) for r in rows])
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+
+    elif database_url.startswith(("postgresql://", "postgres://")):
+        try:
+            import asyncpg  # type: ignore[import]
+        except ImportError:
+            return "Error: asyncpg not installed. Run: pip install asyncpg"
+        try:
+            conn = await asyncpg.connect(database_url)
+            try:
+                rows = await conn.fetch(query)
+            finally:
+                await conn.close()
+            if not rows:
+                return "No results"
+            columns = list(rows[0].keys())
+            return _format_table(columns, [tuple(r) for r in rows[:50]])
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+
+    else:
+        return (
+            "Error: unsupported database URL. "
+            "Use sqlite:///path or postgresql://..."
+        )
+
+
+@tool
+async def sql_schema(database_url: str) -> str:
+    """Get the schema (tables and columns) of a SQLite or PostgreSQL database."""
+    if database_url.startswith("sqlite:///"):
+        path = database_url[len("sqlite:///"):]
+        try:
+            import aiosqlite  # type: ignore[import]
+        except ImportError:
+            return "Error: aiosqlite not installed. Run: pip install aiosqlite"
+        try:
+            async with aiosqlite.connect(path) as db:
+                async with db.execute(
+                    "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+                ) as cursor:
+                    tables = await cursor.fetchall()
+            if not tables:
+                return "No tables found"
+            lines = []
+            for name, sql in tables:
+                lines.append(f"## {name}\n{sql or ''}")
+            return "\n\n".join(lines)[:3000]
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+
+    elif database_url.startswith(("postgresql://", "postgres://")):
+        try:
+            import asyncpg  # type: ignore[import]
+        except ImportError:
+            return "Error: asyncpg not installed. Run: pip install asyncpg"
+        try:
+            conn = await asyncpg.connect(database_url)
+            try:
+                rows = await conn.fetch(
+                    "SELECT table_name, column_name, data_type "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema='public' "
+                    "ORDER BY table_name, ordinal_position"
+                )
+            finally:
+                await conn.close()
+            if not rows:
+                return "No tables found"
+            # Group by table.
+            schema: dict[str, list[str]] = {}
+            for row in rows:
+                schema.setdefault(row["table_name"], []).append(
+                    f"  {row['column_name']} ({row['data_type']})"
+                )
+            lines = []
+            for table, cols in schema.items():
+                lines.append(f"## {table}\n" + "\n".join(cols))
+            return "\n\n".join(lines)[:3000]
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+
+    else:
+        return (
+            "Error: unsupported database URL. "
+            "Use sqlite:///path or postgresql://..."
+        )
+
+
 DEFAULT_TOOLS = ToolRegistry()
 DEFAULT_TOOLS.register_many(
     [
@@ -291,5 +660,16 @@ DEFAULT_TOOLS.register_many(
         run_python,
         get_datetime,
         ingest_document,
+        # GitHub
+        github_get_repo,
+        github_list_issues,
+        github_create_issue,
+        github_get_file,
+        # Web scraping
+        scrape_webpage,
+        extract_links,
+        # SQL
+        sql_query,
+        sql_schema,
     ]
 )

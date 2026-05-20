@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0] — 2026-05-20
+
+### Added
+- `github_get_repo` — fetch repo metadata (stars, forks, issues)
+- `github_list_issues` — list open/closed issues
+- `github_create_issue` — create issues via API
+- `github_get_file` — read file contents from any repo
+- `scrape_webpage` — CSS-selector-based text extraction
+- `extract_links` — extract and resolve all hyperlinks
+- `sql_query` — run SELECT/INSERT/UPDATE against SQLite or PostgreSQL
+- `sql_schema` — inspect table structure of any database
+
 ## [0.1.2] — 2026-05-20
 
 ### Added
