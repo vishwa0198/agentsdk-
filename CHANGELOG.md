@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0] — 2026-05-21
+
+### Added
+- `browser_open`, `browser_click`, `browser_screenshot`, `browser_fill_form` — Playwright headless browser tools
+- `send_email`, `read_emails` — SMTP/IMAP email tools (works with Mailtrap free tier)
+- `discord_send_message`, `discord_read_messages`, `discord_list_guild_channels` — Discord REST API tools (no extra dependency — uses httpx)
+- `calendar_list_events`, `calendar_create_event`, `calendar_delete_event`, `calendar_search_events` — local JSON calendar tools (no OAuth needed)
+
 ## [0.2.0] — 2026-05-20
 
 ### Added

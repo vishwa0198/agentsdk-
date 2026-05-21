@@ -15,16 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import concurrent.futures
-import functools
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 
 import aiofiles
 import httpx
@@ -651,6 +651,429 @@ async def sql_schema(database_url: str) -> str:
         )
 
 
+# ---------------------------------------------------------------------------
+# 10. Browser automation tools (requires: pip install playwright && playwright install chromium)
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def browser_open(url: str) -> str:
+    """Open a URL in a headless browser and return the page title and main text content."""
+    try:
+        from playwright.async_api import async_playwright  # type: ignore[import]
+    except ImportError:
+        return "Error: playwright not installed. Run: pip install playwright && playwright install chromium"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            try:
+                await page.goto(url, timeout=30000)
+            except Exception as exc:
+                await browser.close()
+                if "timeout" in str(exc).lower() or "Timeout" in type(exc).__name__:
+                    return f"Error: page load timeout for {url}"
+                return f"Error: {exc}"
+            title = await page.title()
+            text = await page.inner_text("body")
+            text = re.sub(r"\s{3,}", " ", text).strip()
+            await browser.close()
+            return f"Title: {title}\n\nContent:\n{text[:3000]}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Error: {exc}"
+
+
+@tool
+async def browser_click(url: str, selector: str) -> str:
+    """Open a URL, click an element by CSS selector, return resulting page content."""
+    try:
+        from playwright.async_api import async_playwright  # type: ignore[import]
+    except ImportError:
+        return "Error: playwright not installed. Run: pip install playwright && playwright install chromium"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=30000)
+            element = await page.query_selector(selector)
+            if element is None:
+                await browser.close()
+                return f"Error: selector '{selector}' not found"
+            try:
+                async with page.expect_navigation(timeout=10000):
+                    await element.click()
+            except Exception:
+                await page.wait_for_timeout(1000)
+            title = await page.title()
+            text = await page.inner_text("body")
+            text = re.sub(r"\s{3,}", " ", text).strip()
+            await browser.close()
+            return f"Title: {title}\n\nContent:\n{text[:2000]}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Error: {exc}"
+
+
+@tool
+async def browser_screenshot(url: str, save_path: str) -> str:
+    """Take a full-page screenshot of a URL and save it to save_path."""
+    if ".." in save_path:
+        return "Error: path traversal not allowed"
+    try:
+        from playwright.async_api import async_playwright  # type: ignore[import]
+    except ImportError:
+        return "Error: playwright not installed. Run: pip install playwright && playwright install chromium"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=30000)
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=save_path, full_page=True)
+            await browser.close()
+            return f"Screenshot saved to {save_path}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Error: {exc}"
+
+
+@tool
+async def browser_fill_form(url: str, fields: str, submit_selector: str) -> str:
+    """Fill a web form and submit it. fields is a JSON string mapping CSS selectors to values."""
+    try:
+        from playwright.async_api import async_playwright  # type: ignore[import]
+    except ImportError:
+        return "Error: playwright not installed. Run: pip install playwright && playwright install chromium"
+    try:
+        field_map: dict = json.loads(fields)
+    except json.JSONDecodeError as exc:
+        return f"Error: invalid JSON in fields: {exc}"
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=30000)
+            for sel, value in field_map.items():
+                await page.fill(sel, str(value))
+            try:
+                async with page.expect_navigation(timeout=10000):
+                    await page.click(submit_selector)
+            except Exception:
+                await page.wait_for_timeout(1000)
+            new_url = page.url
+            await browser.close()
+            return f"Form submitted. Landed on: {new_url}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Error: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# 11. Email tools (send: pip install aiosmtplib; read: stdlib imaplib)
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def send_email(to: str, subject: str, body: str) -> str:
+    """Send an email using SMTP. Uses SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS from .env"""
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_pass = os.environ.get("SMTP_PASS")
+    if not all([smtp_host, smtp_user, smtp_pass]):
+        return (
+            "Error: set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env "
+            "— use Mailtrap free tier at mailtrap.io"
+        )
+    try:
+        import aiosmtplib  # type: ignore[import]
+    except ImportError:
+        return "Error: aiosmtplib not installed. Run: pip install aiosmtplib"
+    try:
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        msg = MIMEMultipart()
+        msg["From"] = smtp_user
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+        await aiosmtplib.send(
+            msg,
+            hostname=smtp_host,
+            port=smtp_port,
+            username=smtp_user,
+            password=smtp_pass,
+            start_tls=True,
+        )
+        return f"Email sent to {to} — subject: '{subject}'"
+    except Exception as exc:  # noqa: BLE001
+        return f"Error sending email: {exc}"
+
+
+@tool
+async def read_emails(max_count: int) -> str:
+    """Read latest emails from IMAP inbox. Uses IMAP_HOST, IMAP_USER, IMAP_PASS from .env"""
+    imap_host = os.environ.get("IMAP_HOST")
+    imap_user = os.environ.get("IMAP_USER")
+    imap_pass = os.environ.get("IMAP_PASS")
+    if not all([imap_host, imap_user, imap_pass]):
+        return "Error: set IMAP_HOST, IMAP_USER, IMAP_PASS in .env"
+    count = min(max_count, 10)
+
+    def _fetch() -> str:
+        import email as _email_stdlib
+        import imaplib
+
+        try:
+            with imaplib.IMAP4_SSL(imap_host) as mail:
+                mail.login(imap_user, imap_pass)
+                mail.select("INBOX")
+                _, data = mail.search(None, "ALL")
+                ids = data[0].split()
+                selected = ids[-count:] if len(ids) >= count else ids
+                lines: list[str] = []
+                for i, uid in enumerate(reversed(selected), start=1):
+                    _, msg_data = mail.fetch(uid, "(RFC822)")
+                    raw = msg_data[0][1]
+                    msg = _email_stdlib.message_from_bytes(raw)
+                    from_addr = msg.get("From", "Unknown")
+                    subj = msg.get("Subject", "(No Subject)")
+                    date = msg.get("Date", "Unknown")
+                    preview = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                preview = (
+                                    part.get_payload(decode=True)
+                                    .decode(errors="replace")[:300]
+                                )
+                                break
+                    else:
+                        preview = msg.get_payload(decode=True).decode(errors="replace")[:300]
+                    lines.append(
+                        f"[{i}] From: {from_addr}\n"
+                        f"    Subject: {subj}\n"
+                        f"    Date: {date}\n"
+                        f"    Preview: {preview}"
+                    )
+                return "\n\n".join(lines) if lines else "No emails found"
+        except Exception as exc:  # noqa: BLE001
+            return f"Error reading emails: {exc}"
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch)
+
+
+# ---------------------------------------------------------------------------
+# 12. Discord tools (REST API via httpx — no extra dependency needed)
+# ---------------------------------------------------------------------------
+
+_DISCORD_API = "https://discord.com/api/v10"
+
+
+@tool
+async def discord_send_message(channel_id: str, message: str) -> str:
+    """Send a message to a Discord channel using DISCORD_BOT_TOKEN from .env"""
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if not token:
+        return (
+            "Error: set DISCORD_BOT_TOKEN in .env "
+            "— create a free bot at discord.com/developers"
+        )
+    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{_DISCORD_API}/channels/{channel_id}/messages",
+                json={"content": message},
+                headers=headers,
+            )
+        if resp.status_code == 403:
+            return f"Error: bot lacks permission to post in channel {channel_id}"
+        if resp.status_code == 404:
+            return f"Error: channel {channel_id} not found"
+        resp.raise_for_status()
+        return f"Message sent to channel {channel_id}"
+    except httpx.HTTPStatusError as exc:
+        return f"Error: {exc.response.status_code}"
+    except httpx.RequestError as exc:
+        return f"Error: {exc}"
+
+
+@tool
+async def discord_read_messages(channel_id: str, count: int) -> str:
+    """Read recent messages from a Discord channel."""
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if not token:
+        return (
+            "Error: set DISCORD_BOT_TOKEN in .env "
+            "— create a free bot at discord.com/developers"
+        )
+    headers = {"Authorization": f"Bot {token}"}
+    limit = min(count, 50)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{_DISCORD_API}/channels/{channel_id}/messages",
+                params={"limit": limit},
+                headers=headers,
+            )
+        if resp.status_code == 403:
+            return f"Error: bot lacks permission to read channel {channel_id}"
+        if resp.status_code == 404:
+            return f"Error: channel {channel_id} not found"
+        resp.raise_for_status()
+        msgs = resp.json()
+        if not msgs:
+            return "No messages found"
+        lines = [
+            f"[{m.get('timestamp', '')[:19]}] "
+            f"{m.get('author', {}).get('username', 'unknown')}: "
+            f"{m.get('content', '')}"
+            for m in msgs
+        ]
+        return "\n".join(lines)
+    except httpx.RequestError as exc:
+        return f"Error: {exc}"
+
+
+@tool
+async def discord_list_guild_channels(guild_id: str) -> str:
+    """List all text channels in a Discord server (guild)."""
+    token = os.environ.get("DISCORD_BOT_TOKEN")
+    if not token:
+        return (
+            "Error: set DISCORD_BOT_TOKEN in .env "
+            "— create a free bot at discord.com/developers"
+        )
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{_DISCORD_API}/guilds/{guild_id}/channels",
+                headers=headers,
+            )
+        if resp.status_code == 403:
+            return f"Error: bot lacks permission to view guild {guild_id}"
+        if resp.status_code == 404:
+            return f"Error: guild {guild_id} not found"
+        resp.raise_for_status()
+        channels = [c for c in resp.json() if c.get("type") == 0][:20]
+        if not channels:
+            return "No text channels found"
+        return "\n".join(f"#{c['name']} (ID: {c['id']})" for c in channels)
+    except httpx.RequestError as exc:
+        return f"Error: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# 13. Local calendar tools (no OAuth — stored in .agentsdk/calendar.json)
+# ---------------------------------------------------------------------------
+
+_CALENDAR_FILE = Path(".agentsdk") / "calendar.json"
+
+
+def _load_calendar() -> list:
+    if not _CALENDAR_FILE.exists():
+        return []
+    try:
+        return json.loads(_CALENDAR_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _save_calendar(events: list) -> None:
+    _CALENDAR_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CALENDAR_FILE.write_text(
+        json.dumps(events, indent=2, default=str), encoding="utf-8"
+    )
+
+
+@tool
+async def calendar_list_events(days_ahead: int) -> str:
+    """List calendar events for the next N days from local calendar store."""
+    loop = asyncio.get_event_loop()
+    events = await loop.run_in_executor(None, _load_calendar)
+    now = datetime.now()
+    cutoff = now + timedelta(days=days_ahead)
+    upcoming = []
+    for ev in events:
+        try:
+            start = datetime.fromisoformat(ev["start_time"])
+            if now <= start <= cutoff:
+                upcoming.append(ev)
+        except (KeyError, ValueError):
+            continue
+    upcoming.sort(key=lambda e: e["start_time"])
+    if not upcoming:
+        return f"No events in the next {days_ahead} days"
+    lines = [
+        f"{ev['start_time']} — {ev['title']}"
+        + (f" ({ev['description']})" if ev.get("description") else "")
+        for ev in upcoming
+    ]
+    return "\n".join(lines)
+
+
+@tool
+async def calendar_create_event(
+    title: str, start_time: str, end_time: str, description: str
+) -> str:
+    """Create a local calendar event. Times must be ISO format: 2026-05-21T14:00:00"""
+    try:
+        datetime.fromisoformat(start_time)
+        datetime.fromisoformat(end_time)
+    except ValueError:
+        return (
+            "Error: start_time and end_time must be valid ISO datetime strings "
+            "(e.g. 2026-05-21T14:00:00)"
+        )
+    event_id = str(uuid4())[:8]
+    event = {
+        "event_id": event_id,
+        "title": title,
+        "start_time": start_time,
+        "end_time": end_time,
+        "description": description,
+        "created_at": datetime.now().isoformat(),
+    }
+    loop = asyncio.get_event_loop()
+    events = await loop.run_in_executor(None, _load_calendar)
+    events.append(event)
+    await loop.run_in_executor(None, _save_calendar, events)
+    return f"Event created: '{title}' on {start_time} — ID: {event_id}"
+
+
+@tool
+async def calendar_delete_event(event_id: str) -> str:
+    """Delete a local calendar event by its event ID."""
+    loop = asyncio.get_event_loop()
+    events = await loop.run_in_executor(None, _load_calendar)
+    new_events = [e for e in events if e.get("event_id") != event_id]
+    if len(new_events) == len(events):
+        return f"Error: event {event_id} not found"
+    await loop.run_in_executor(None, _save_calendar, new_events)
+    return f"Event {event_id} deleted"
+
+
+@tool
+async def calendar_search_events(query: str) -> str:
+    """Search local calendar events by title or description keyword."""
+    loop = asyncio.get_event_loop()
+    events = await loop.run_in_executor(None, _load_calendar)
+    q = query.lower()
+    matches = [
+        e for e in events
+        if q in e.get("title", "").lower() or q in e.get("description", "").lower()
+    ]
+    if not matches:
+        return f"No events found matching '{query}'"
+    lines = [
+        f"{ev['start_time']} — {ev['title']}"
+        + (f" ({ev['description']})" if ev.get("description") else "")
+        for ev in matches
+    ]
+    return "\n".join(lines)
+
+
 DEFAULT_TOOLS = ToolRegistry()
 DEFAULT_TOOLS.register_many(
     [
@@ -671,5 +1094,22 @@ DEFAULT_TOOLS.register_many(
         # SQL
         sql_query,
         sql_schema,
+        # Browser automation
+        browser_open,
+        browser_click,
+        browser_screenshot,
+        browser_fill_form,
+        # Email
+        send_email,
+        read_emails,
+        # Discord
+        discord_send_message,
+        discord_read_messages,
+        discord_list_guild_channels,
+        # Calendar (local)
+        calendar_list_events,
+        calendar_create_event,
+        calendar_delete_event,
+        calendar_search_events,
     ]
 )

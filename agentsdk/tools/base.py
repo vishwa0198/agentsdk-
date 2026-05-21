@@ -125,11 +125,15 @@ class FunctionTool(BaseTool):
         return self._schema
 
     async def execute(self, **kwargs: Any) -> str:
-        """Call the wrapped function; return errors as strings."""
-        try:
-            return await self._fn(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            return f"Error: {exc}"
+        """Call the wrapped function; propagates exceptions so the agent dispatch
+        layer can mark the result with ``is_error=True``.  Converts non-str
+        returns (including ``None``) to their string representation."""
+        result = await self._fn(**kwargs)
+        if result is None:
+            return "None"
+        if not isinstance(result, str):
+            return str(result)
+        return result
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"FunctionTool(name={self._schema.name!r})"

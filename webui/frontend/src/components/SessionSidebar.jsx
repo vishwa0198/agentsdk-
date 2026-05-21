@@ -1,6 +1,6 @@
-export default function SessionSidebar({ sessions, activeSession, onSelect, onNew, onDelete }) {
+export default function SessionSidebar({ sessions, activeSession, onSelect, onNew, onDelete, isOpen }) {
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${isOpen ? ' open' : ''}`}>
       <div className="sidebar-header">
         <span className="sidebar-title">Sessions</span>
         <button className="btn-primary small" onClick={onNew}>+ New</button>

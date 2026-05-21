@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
+from agentsdk.exceptions import LLMAuthError
 from agentsdk.llm import LLMProvider, ToolSchema
 from agentsdk.messages import AIMessage, Memory, MessageHistory, ToolCall
 from agentsdk.tools.base import BaseTool
@@ -280,12 +281,13 @@ class Agent:
                 # with no tool calls, the loop continues to let the model
                 # recover in the next iteration.
 
+        except LLMAuthError:
+            raise  # auth errors are not recoverable — propagate to caller
         except Exception as exc:
             stopped_by = "error"
             output = str(exc)
             if self.config.verbose:
                 print(f"[{self.config.name}] ERROR: {exc}")
-
         # Grab the last thought as output when the loop was exhausted.
         if stopped_by == "max_iterations" and steps:
             output = steps[-1].thought
@@ -298,7 +300,7 @@ class Agent:
                 iteration=len(steps),
                 metadata={"stopped_by": stopped_by},
             )
-        elif self._memory and session_id:
+        if self._memory and session_id:
             await self._memory.save(session_id, history)
 
         # ── 5. Streaming final event ───────────────────────────────────────

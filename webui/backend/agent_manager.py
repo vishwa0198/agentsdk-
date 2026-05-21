@@ -81,7 +81,8 @@ class AgentManager:
         )
 
         # ── LLM ───────────────────────────────────────────────────────────
-        llm = GroqProvider(api_key=os.environ["GROQ_API_KEY"])
+        model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        llm = GroqProvider(api_key=os.environ["GROQ_API_KEY"], model=model)
 
         config = AgentConfig(
             name=agent_name,

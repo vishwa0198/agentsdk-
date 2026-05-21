@@ -126,7 +126,8 @@ class RAGMemory:
             session_id: Conversation identifier.
             history: Full conversation history to persist.
         """
-        for msg in history.get_all():
+        msgs = history.get_all()
+        for msg in msgs:
             key = f"{session_id}:{msg.created_at.isoformat()}:{msg.content[:40]}"
             if key not in self._stored_keys:
                 await self._store.add(session_id, msg)

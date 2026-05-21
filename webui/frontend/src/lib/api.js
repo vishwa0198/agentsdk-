@@ -59,3 +59,22 @@ export const createWebSocket = (sessionId) => {
   const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return new WebSocket(`${wsProto}//localhost:8000/ws/${sessionId}?token=${token}`)
 }
+
+// ---------------------------------------------------------------------------
+// Memory helpers
+// ---------------------------------------------------------------------------
+
+export const getMemories = (sessionId) =>
+  api.get(`/memory/${sessionId}`)
+
+export const searchMemory = (sessionId, query, n = 5) =>
+  api.get(`/memory/${sessionId}/search`, { params: { q: query, n } })
+
+export const deleteMemory = (sessionId, memoryId) =>
+  api.delete(`/memory/${sessionId}/${memoryId}`)
+
+export const clearMemory = (sessionId) =>
+  api.delete(`/memory/${sessionId}`)
+
+export const getMemoryStats = (sessionId) =>
+  api.get(`/memory/${sessionId}/stats`)

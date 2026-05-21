@@ -265,25 +265,3 @@ class Memory(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-# 6. InMemoryMemory — default implementation
-# ---------------------------------------------------------------------------
-
-
-class InMemoryMemory:
-    """In-process memory store backed by a plain dict.
-
-    Suitable for development, testing, and single-process deployments.
-    No I/O, no external dependencies.
-    """
-
-    def __init__(self) -> None:
-        self._store: dict[str, MessageHistory] = {}
-
-    async def load(self, session_id: str) -> MessageHistory:
-        """Return the stored history, or a fresh :class:`MessageHistory` if none exists."""
-        return self._store.get(session_id, MessageHistory())
-
-    async def save(self, session_id: str, history: MessageHistory) -> None:
-        """Store *history* under *session_id* (overwrites any existing entry)."""
-        self._store[session_id] = history

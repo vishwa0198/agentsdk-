@@ -7,6 +7,7 @@ import ToolCallTrace from './components/ToolCallTrace.jsx'
 import TokenCounter from './components/TokenCounter.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import AgentConfigPage from './pages/AgentConfigPage.jsx'
+import MemoryPage from './pages/MemoryPage.jsx'
 import { getMe, getSessions, deleteSession, createWebSocket } from './lib/api.js'
 import api from './lib/api.js'
 import './index.css'
@@ -36,17 +37,19 @@ function TopNav({ onToggleSidebar, onToggleTrace, tokenStats }) {
 
   return (
     <header className="topbar">
-      <button className="icon-btn" onClick={onToggleSidebar} title="Toggle sidebar">☰</button>
+      <button className="icon-btn hamburger" onClick={onToggleSidebar} title="Toggle sidebar">☰</button>
       <span className="topbar-title">agentsdk</span>
       <nav style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         <NavLink to="/" end style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Chat</NavLink>
         <NavLink to="/agents" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Agents</NavLink>
+        <NavLink to="/memory" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Memory</NavLink>
       </nav>
       <div className="topbar-right">
         <TokenCounter stats={tokenStats} />
         <button className="icon-btn" onClick={onToggleTrace} title="Toggle tool trace">🔧</button>
+        <DarkModeToggle />
         {me && (
-          <span style={{ fontSize: 12, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--border)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
+          <span className="nav-username" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 12, border: '1px solid var(--border)', color: 'var(--text-2)', whiteSpace: 'nowrap' }}>
             {me.username}
           </span>
         )}
@@ -67,11 +70,37 @@ const navStyle = {
 }
 
 // ---------------------------------------------------------------------------
+// Dark mode toggle
+// ---------------------------------------------------------------------------
+function DarkModeToggle() {
+  const [dark, setDark] = useState(
+    () => localStorage.getItem('agentsdk_theme') === 'dark'
+      || (!localStorage.getItem('agentsdk_theme')
+          && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  )
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+    localStorage.setItem('agentsdk_theme', dark ? 'dark' : 'light')
+  }, [dark])
+
+  return (
+    <button
+      className="icon-btn"
+      onClick={() => setDark(d => !d)}
+      title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+    >
+      {dark ? '☀️' : '🌙'}
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main chat view
 // ---------------------------------------------------------------------------
 const AGENT_NAME = 'WebAgent'
 
-function ChatView({ sidebarOpen, traceOpen, setTraceOpen, tokenStats, setTokenStats }) {
+function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenStats, setTokenStats }) {
   const [sessions, setSessions] = useState([])
   const [activeSession, setActiveSession] = useState(null)
   const [messages, setMessages] = useState([])
@@ -102,6 +131,7 @@ function ChatView({ sidebarOpen, traceOpen, setTraceOpen, tokenStats, setTokenSt
     setActiveSession(sessionId)
     setMessages([])
     setToolCalls([])
+    setTokenStats({ input: 0, output: 0 })
   }
 
   const handleDeleteSession = async (sessionId) => {
@@ -160,7 +190,7 @@ function ChatView({ sidebarOpen, traceOpen, setTraceOpen, tokenStats, setTokenSt
       if (event.type === 'final') {
         const tok = event.data.tokens ?? {}
         setMessages(prev => prev.map(m =>
-          m.id === assistantMsgId ? { ...m, content: event.data.output, thinking: false, tokens: tok } : m
+          m.id === assistantMsgId ? { ...m, content: event.data.output, thinking: false, tokens: tok, animate: true } : m
         ))
         setTokenStats(prev => ({ input: prev.input + (tok.input ?? 0), output: prev.output + (tok.output ?? 0) }))
         setIsStreaming(false)
@@ -186,19 +216,19 @@ function ChatView({ sidebarOpen, traceOpen, setTraceOpen, tokenStats, setTokenSt
     }
 
     ws.onclose = () => setIsStreaming(false)
-  }, [activeSession, isStreaming, fetchSessions, onChatComplete])
+  }, [activeSession, isStreaming, fetchSessions])
 
   return (
     <div className="main-layout">
-      {sidebarOpen && (
-        <SessionSidebar
-          sessions={sessions}
-          activeSession={activeSession}
-          onSelect={handleSelectSession}
-          onNew={handleNewSession}
-          onDelete={handleDeleteSession}
-        />
-      )}
+      <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={onCloseSidebar} />
+      <SessionSidebar
+        isOpen={sidebarOpen}
+        sessions={sessions}
+        activeSession={activeSession}
+        onSelect={handleSelectSession}
+        onNew={handleNewSession}
+        onDelete={handleDeleteSession}
+      />
       <main className="chat-area">
         {activeSession ? (
           <ChatWindow messages={messages} isStreaming={isStreaming} onSend={handleSend} sessionId={activeSession} />
@@ -222,7 +252,7 @@ function ChatView({ sidebarOpen, traceOpen, setTraceOpen, tokenStats, setTokenSt
 // Root app with routing
 // ---------------------------------------------------------------------------
 function AppShell() {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768)
   const [traceOpen, setTraceOpen] = useState(true)
   const [tokenStats, setTokenStats] = useState({ input: 0, output: 0 })
 
@@ -234,8 +264,9 @@ function AppShell() {
         tokenStats={tokenStats}
       />
       <Routes>
-        <Route path="/" element={<ChatView sidebarOpen={sidebarOpen} traceOpen={traceOpen} setTraceOpen={setTraceOpen} tokenStats={tokenStats} setTokenStats={setTokenStats} />} />
+        <Route path="/" element={<ChatView sidebarOpen={sidebarOpen} onCloseSidebar={() => setSidebarOpen(false)} traceOpen={traceOpen} setTraceOpen={setTraceOpen} tokenStats={tokenStats} setTokenStats={setTokenStats} />} />
         <Route path="/agents" element={<AgentConfigPage />} />
+        <Route path="/memory" element={<PrivateRoute><MemoryPage /></PrivateRoute>} />
       </Routes>
     </div>
   )

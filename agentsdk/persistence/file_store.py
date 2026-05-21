@@ -65,7 +65,7 @@ class FileCheckpointStore:
             async with aiofiles.open(path, "r", encoding="utf-8") as f:
                 data = json.loads(await f.read())
             return Checkpoint.model_validate(data)
-        except FileNotFoundError:
+        except Exception:  # noqa: BLE001 — corrupted/missing files return None
             return None
 
     async def delete(self, session_id: str) -> None:
