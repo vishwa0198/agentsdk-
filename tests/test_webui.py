@@ -10,6 +10,7 @@ All tests are fully offline — no real LLM calls, no network, no ChromaDB.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -34,6 +35,18 @@ os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000")
 
 from models import PipelineConfig, PipelineEdgeConfig, PipelineNodeConfig
 from file_handler import MAX_FILE_BYTES, extract_text
+
+
+def _import_backend_main():
+    """Import webui/backend/main.py explicitly from its file path."""
+    try:
+        spec = importlib.util.spec_from_file_location("webui_backend_main", _BACKEND / "main.py")
+        assert spec is not None and spec.loader is not None
+        app_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(app_module)
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"webui backend dependency not installed: {exc.name}")
+    return app_module
 
 
 def _node(
@@ -205,14 +218,14 @@ class TestMemoryIngestExtraction:
 class TestCORSSecurity:
     def test_allowed_origins_env_var_read(self):
         """ALLOWED_ORIGINS env var is parsed into a list at import time."""
-        import main as app_module
+        app_module = _import_backend_main()
         # conftest sets ALLOWED_ORIGINS=http://localhost:3000
         assert isinstance(app_module.ALLOWED_ORIGINS, list)
         assert "http://localhost:3000" in app_module.ALLOWED_ORIGINS
 
     def test_wildcard_not_in_origins(self):
         """Production CORS must never fall back to allow-all '*'."""
-        import main as app_module
+        app_module = _import_backend_main()
         assert "*" not in app_module.ALLOWED_ORIGINS
 
     def test_multi_origin_parsing(self, monkeypatch):
