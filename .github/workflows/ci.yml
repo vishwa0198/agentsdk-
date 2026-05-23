@@ -45,7 +45,9 @@ jobs:
           cache: pip
 
       - name: Install backend deps
-        run: pip install -r webui/backend/requirements.txt
+        run: |
+          pip install -r webui/backend/requirements.txt
+          pip install -e .
 
       - name: Import check (catches missing deps & syntax errors)
         working-directory: webui/backend
