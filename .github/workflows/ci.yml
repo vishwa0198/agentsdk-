@@ -26,7 +26,7 @@ jobs:
       - name: Install SDK + test deps
         run: |
           pip install -e ".[rag]"
-          pip install pytest pytest-asyncio
+          pip install fastapi pytest pytest-asyncio
 
       - name: Run SDK tests
         run: pytest tests/ -x -q --tb=short
@@ -45,7 +45,9 @@ jobs:
           cache: pip
 
       - name: Install backend deps
-        run: pip install -r webui/backend/requirements.txt
+        run: |
+          pip install -e ".[mcp]"
+          pip install -r webui/backend/requirements.txt
 
       - name: Import check (catches missing deps & syntax errors)
         working-directory: webui/backend
