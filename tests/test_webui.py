@@ -36,6 +36,14 @@ from models import PipelineConfig, PipelineEdgeConfig, PipelineNodeConfig
 from file_handler import MAX_FILE_BYTES, extract_text
 
 
+def _import_backend_main():
+    try:
+        import main as app_module
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"webui backend dependency not installed: {exc.name}")
+    return app_module
+
+
 def _node(
     nid: str,
     *,
@@ -205,14 +213,14 @@ class TestMemoryIngestExtraction:
 class TestCORSSecurity:
     def test_allowed_origins_env_var_read(self):
         """ALLOWED_ORIGINS env var is parsed into a list at import time."""
-        import main as app_module
+        app_module = _import_backend_main()
         # conftest sets ALLOWED_ORIGINS=http://localhost:3000
         assert isinstance(app_module.ALLOWED_ORIGINS, list)
         assert "http://localhost:3000" in app_module.ALLOWED_ORIGINS
 
     def test_wildcard_not_in_origins(self):
         """Production CORS must never fall back to allow-all '*'."""
-        import main as app_module
+        app_module = _import_backend_main()
         assert "*" not in app_module.ALLOWED_ORIGINS
 
     def test_multi_origin_parsing(self, monkeypatch):
