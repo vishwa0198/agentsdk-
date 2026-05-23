@@ -189,16 +189,17 @@ class TestMCPClientConnect:
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=rw if transport != "http" else rw_http)
         mock_ctx.__aexit__ = AsyncMock(return_value=None)
-        transport_client = MagicMock(return_value=mock_ctx)
+        mock_transport_client = MagicMock(return_value=mock_ctx)
 
         session_ctx = MagicMock()
         session_ctx.__aenter__ = AsyncMock(return_value=session)
         session_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_client_session_cls = MagicMock(return_value=session_ctx)
 
         with (
             patch("agentsdk.mcp.client._require_mcp", return_value=object()),
-            patch(patch_path, return_value=transport_client),
-            patch("agentsdk.mcp.client._get_client_session", return_value=MagicMock(return_value=session_ctx)),
+            patch(patch_path, return_value=mock_transport_client),
+            patch("agentsdk.mcp.client._get_client_session", return_value=mock_client_session_cls),
             patch("agentsdk.mcp.client._get_stdio_server_parameters", return_value=MagicMock()),
         ):
             tools = await client.connect()

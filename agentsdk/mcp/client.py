@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack
+from functools import lru_cache
 from importlib import import_module
 from typing import Any
 
@@ -56,23 +57,33 @@ def _require_mcp() -> Any:
         ) from exc
 
 
+@lru_cache(maxsize=None)
 def _get_client_session() -> Any:
+    """Return MCP ClientSession class via lazy import."""
     return import_module("mcp").ClientSession
 
 
+@lru_cache(maxsize=None)
 def _get_stdio_client() -> Any:
+    """Return stdio transport context-manager factory via lazy import."""
     return import_module("mcp.client.stdio").stdio_client
 
 
+@lru_cache(maxsize=None)
 def _get_sse_client() -> Any:
+    """Return SSE transport context-manager factory via lazy import."""
     return import_module("mcp.client.sse").sse_client
 
 
+@lru_cache(maxsize=None)
 def _get_streamablehttp_client() -> Any:
+    """Return streamable HTTP transport context-manager factory via lazy import."""
     return import_module("mcp.client.streamable_http").streamablehttp_client
 
 
+@lru_cache(maxsize=None)
 def _get_stdio_server_parameters() -> Any:
+    """Return MCP StdioServerParameters class via lazy import."""
     return import_module("mcp").StdioServerParameters
 
 
