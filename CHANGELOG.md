@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0] — 2026-05-22
+
+### Added
+- **Visual Pipeline Builder** — drag-and-drop multi-agent DAG UI
+  - `@xyflow/react` canvas with custom agent nodes, handles, minimap, controls
+  - Add / connect / delete nodes; set entry and exit node per pipeline
+  - Right sidebar config panel: name, system prompt, model, max iterations, input/output keys
+  - Run panel — run the pipeline with freeform input; per-node result overlays on canvas
+  - Save / Load / Delete pipelines (stored as JSON under `.agentsdk/pipelines/`)
+  - `webui/backend/pipeline_manager.py` — persistence + real `AgentGraph` + `GraphRunner` execution
+  - `/pipelines` REST CRUD + `/pipelines/run` (ad-hoc) + `/pipelines/{id}/run` endpoints
+  - **Pipeline** nav link in the top bar
+
+## [0.4.0] — 2026-05-22
+
+### Added
+- **MCP (Model Context Protocol) integration** — connect any MCP-compatible server as a tool source
+  - `agentsdk/mcp/client.py` — `MCPClient` + `MCPTool(BaseTool)` supporting `stdio`, `sse`, and `http` (streamable HTTP) transports
+  - `MCPClient` is exported from the top-level `agentsdk` package
+  - `MCPTool` plugs directly into `ToolRegistry` — no agent code changes needed
+  - `webui/backend/mcp_manager.py` — per-user server config and connection lifecycle
+  - `/mcp/servers` REST endpoints — add, remove, connect, disconnect servers
+  - `MCPPage` in the web UI — browse configured servers, connect/disconnect, inspect available tools
+  - `pip install 'agentsdk-py[mcp]'` optional dependency group
+
 ## [0.3.0] — 2026-05-21
 
 ### Added

@@ -21,8 +21,9 @@ from agentsdk.persistence.session import SessionManager
 from agentsdk.memory.embedder import LocalEmbedder, GroqEmbedder
 from agentsdk.memory.vector_store import VectorMemoryStore
 from agentsdk.memory.rag_memory import RAGMemory
+from agentsdk.mcp.client import MCPClient, MCPTool
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Core agent
@@ -42,6 +43,8 @@ __all__ = [
     "FileCheckpointStore", "SessionManager",
     # Memory / RAG
     "LocalEmbedder", "GroqEmbedder", "VectorMemoryStore", "RAGMemory",
+    # MCP
+    "MCPClient", "MCPTool",
     # Meta
     "__version__",
 ]

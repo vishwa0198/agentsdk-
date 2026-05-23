@@ -119,3 +119,45 @@ scaffold-agent trace .agentsdk/checkpoints/MyAgent/user-001.json
 # List all sessions for an agent
 scaffold-agent list-sessions MyAgent
 ```
+
+## Web UI
+
+A full-featured chat interface ships alongside the SDK — agents, memory, MCP
+tool servers, multi-agent pipelines, schedules, and live monitoring in one UI.
+
+```bash
+cd webui
+cp .env.example .env          # fill in GROQ_API_KEY and SECRET_KEY
+docker compose up --build     # backend :8000, frontend :3000
+```
+
+**Features:**
+
+| | |
+|---|---|
+| 💬 Chat | Streaming WebSocket chat with any configured agent |
+| 🧠 Memory | Visualise RAG memory, semantic search, drag-and-drop file ingest |
+| 🔌 MCP | Connect any MCP server (Filesystem, Postgres, custom SSE/stdio) |
+| 🔗 Pipeline | Visual node-editor for multi-agent pipelines with auto-wire |
+| ⏱ Schedule | Cron/interval schedules with webhook triggers and run history |
+| 📊 Monitor | Live run metrics, token usage, latency charts |
+
+For local development without Docker:
+
+```bash
+# Backend
+cd webui/backend && pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+
+# Frontend (separate terminal)
+cd webui/frontend && npm install && npm run dev
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for setup instructions and
+contribution guidelines.
+
+## License
+
+MIT

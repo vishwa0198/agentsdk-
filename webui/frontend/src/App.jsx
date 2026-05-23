@@ -8,6 +8,12 @@ import TokenCounter from './components/TokenCounter.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import AgentConfigPage from './pages/AgentConfigPage.jsx'
 import MemoryPage from './pages/MemoryPage.jsx'
+import MCPPage from './pages/MCPPage.jsx'
+import PipelinePage from './pages/PipelinePage.jsx'
+import MonitorPage from './pages/MonitorPage.jsx'
+import SchedulePage from './pages/SchedulePage.jsx'
+import CommandPalette from './components/CommandPalette.jsx'
+import AgentStatusBar from './components/AgentStatusBar.jsx'
 import { getMe, getSessions, deleteSession, createWebSocket } from './lib/api.js'
 import api from './lib/api.js'
 import './index.css'
@@ -25,7 +31,7 @@ function PrivateRoute({ children }) {
 // ---------------------------------------------------------------------------
 // Top nav (shown on protected pages)
 // ---------------------------------------------------------------------------
-function TopNav({ onToggleSidebar, onToggleTrace, tokenStats }) {
+function TopNav({ onToggleSidebar, onToggleTrace, tokenStats, onOpenCmd }) {
   const navigate = useNavigate()
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => getMe().then(r => r.data), retry: false })
 
@@ -43,9 +49,14 @@ function TopNav({ onToggleSidebar, onToggleTrace, tokenStats }) {
         <NavLink to="/" end style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Chat</NavLink>
         <NavLink to="/agents" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Agents</NavLink>
         <NavLink to="/memory" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Memory</NavLink>
+        <NavLink to="/mcp" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>MCP</NavLink>
+        <NavLink to="/pipeline" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Pipeline</NavLink>
+        <NavLink to="/monitor" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Monitor</NavLink>
+        <NavLink to="/schedule" style={navStyle} className={({ isActive }) => isActive ? 'nav-active' : ''}>Schedules</NavLink>
       </nav>
       <div className="topbar-right">
         <TokenCounter stats={tokenStats} />
+        <button className="icon-btn" onClick={onOpenCmd} title="Command palette (Ctrl+K)" style={{ fontFamily: 'monospace', fontSize: 14 }}>⌘</button>
         <button className="icon-btn" onClick={onToggleTrace} title="Toggle tool trace">🔧</button>
         <DarkModeToggle />
         {me && (
@@ -98,7 +109,15 @@ function DarkModeToggle() {
 // ---------------------------------------------------------------------------
 // Main chat view
 // ---------------------------------------------------------------------------
-const AGENT_NAME = 'WebAgent'
+const DEFAULT_AGENT = { name: 'WebAgent', systemPrompt: null }
+
+function loadSavedAgents() {
+  try {
+    return JSON.parse(localStorage.getItem('agentsdk_agents') || '[]')
+  } catch {
+    return []
+  }
+}
 
 function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenStats, setTokenStats }) {
   const [sessions, setSessions] = useState([])
@@ -106,17 +125,26 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
   const [messages, setMessages] = useState([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [toolCalls, setToolCalls] = useState([])
+  const [selectedAgent, setSelectedAgent] = useState(DEFAULT_AGENT)
+  const [savedAgents, setSavedAgents] = useState(loadSavedAgents)
 
   const fetchSessions = useCallback(async () => {
     try {
-      const res = await getSessions(AGENT_NAME)
+      const res = await getSessions(selectedAgent.name)
       setSessions(res.data)
     } catch {
       // Backend not yet ready
     }
-  }, [])
+  }, [selectedAgent.name])
 
   useEffect(() => { fetchSessions() }, [fetchSessions])
+
+  // Reload agent list when window regains focus (user may have added agents on /agents tab)
+  useEffect(() => {
+    const onFocus = () => setSavedAgents(loadSavedAgents())
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
 
   const handleNewSession = () => {
     const id = `session-${crypto.randomUUID().slice(0, 8)}`
@@ -144,20 +172,30 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
     fetchSessions()
   }
 
-  const handleSend = useCallback(async (text) => {
-    if (!activeSession || !text.trim() || isStreaming) return
+  const handleSend = useCallback(async (text, files = []) => {
+    if (!activeSession || isStreaming) return
     setIsStreaming(true)
     setToolCalls([])
 
     const userMsgId = Date.now()
     const assistantMsgId = userMsgId + 1
 
-    setMessages(prev => [...prev, { id: userMsgId, role: 'user', content: text }])
+    // Show attachment names in the user bubble
+    const displayText = files.length
+      ? `${files.map(f => `[${f.filename}]`).join(' ')} ${text}`.trim()
+      : text
+
+    setMessages(prev => [...prev, { id: userMsgId, role: 'user', content: displayText }])
 
     const ws = createWebSocket(activeSession)
     let assistantAdded = false
 
-    ws.onopen = () => ws.send(JSON.stringify({ message: text, agent_name: AGENT_NAME }))
+    ws.onopen = () => ws.send(JSON.stringify({
+      message: text || '(see attached file)',
+      agent_name: selectedAgent.name,
+      system_prompt: selectedAgent.systemPrompt || null,
+      files: files,          // pass full file info objects — backend builds context
+    }))
 
     ws.onmessage = (e) => {
       const event = JSON.parse(e.data)
@@ -172,6 +210,7 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
 
       if (event.type === 'tool_call') {
         setToolCalls(prev => [...prev, { id: Date.now() + Math.random(), ...event.data, result: null, isError: false }])
+        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, activeTool: event.data.name } : m))
       }
 
       if (event.type === 'tool_result') {
@@ -185,6 +224,7 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
           }
           return updated
         })
+        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, activeTool: null } : m))
       }
 
       if (event.type === 'final') {
@@ -200,8 +240,13 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
 
       if (event.type === 'error') {
         if (!assistantAdded) setMessages(prev => [...prev, { id: assistantMsgId, role: 'assistant', content: '', thinking: false, tokens: null }])
+        const raw = event.data.message || ''
+        const isRateLimit = raw.includes('rate_limit_exceeded') || raw.includes('413') || raw.includes('Request too large')
+        const friendlyMsg = isRateLimit
+          ? '⚠ Groq rate limit hit (session history too large). Start a **New Session** to continue, or wait a minute and retry.'
+          : `⚠ ${raw}`
         setMessages(prev => prev.map(m =>
-          m.id === assistantMsgId ? { ...m, content: `⚠ ${event.data.message}`, thinking: false, isError: true } : m
+          m.id === assistantMsgId ? { ...m, content: friendlyMsg, thinking: false, isError: true } : m
         ))
         setIsStreaming(false)
         ws.close()
@@ -230,6 +275,44 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
         onDelete={handleDeleteSession}
       />
       <main className="chat-area">
+        {/* Agent selector bar */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px',
+          borderBottom: '1px solid var(--border)', background: 'var(--bg-2)',
+          fontSize: 12, color: 'var(--text-2)',
+        }}>
+          <span>🤖 Agent:</span>
+          <select
+            value={selectedAgent.name}
+            onChange={e => {
+              const name = e.target.value
+              if (name === 'WebAgent') {
+                setSelectedAgent(DEFAULT_AGENT)
+              } else {
+                const found = savedAgents.find(a => a.name === name)
+                setSelectedAgent(found ? { name: found.name, systemPrompt: found.systemPrompt } : DEFAULT_AGENT)
+              }
+              setActiveSession(null)
+              setMessages([])
+              setToolCalls([])
+              setSessions([])
+            }}
+            style={{
+              padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border)',
+              background: 'var(--bg-1)', color: 'var(--text-1)', fontSize: 12, cursor: 'pointer',
+            }}
+          >
+            <option value="WebAgent">WebAgent (default)</option>
+            {savedAgents.map(a => (
+              <option key={a.name} value={a.name}>{a.name}</option>
+            ))}
+          </select>
+          {selectedAgent.systemPrompt && (
+            <span style={{ color: 'var(--text-3, #94a3b8)', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>
+              "{selectedAgent.systemPrompt.slice(0, 60)}{selectedAgent.systemPrompt.length > 60 ? '…' : ''}"
+            </span>
+          )}
+        </div>
         {activeSession ? (
           <ChatWindow messages={messages} isStreaming={isStreaming} onSend={handleSend} sessionId={activeSession} />
         ) : (
@@ -244,6 +327,9 @@ function ChatView({ sidebarOpen, onCloseSidebar, traceOpen, setTraceOpen, tokenS
           <ToolCallTrace toolCalls={toolCalls} />
         </aside>
       )}
+      {isStreaming && (
+        <AgentStatusBar activeTool={messages.find(m => m.thinking)?.activeTool} />
+      )}
     </div>
   )
 }
@@ -255,6 +341,18 @@ function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768)
   const [traceOpen, setTraceOpen] = useState(true)
   const [tokenStats, setTokenStats] = useState({ input: 0, output: 0 })
+  const [cmdOpen, setCmdOpen] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setCmdOpen(o => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   return (
     <div className="app">
@@ -262,12 +360,19 @@ function AppShell() {
         onToggleSidebar={() => setSidebarOpen(o => !o)}
         onToggleTrace={() => setTraceOpen(o => !o)}
         tokenStats={tokenStats}
+        onOpenCmd={() => setCmdOpen(true)}
       />
+      <div className="accent-line" />
       <Routes>
         <Route path="/" element={<ChatView sidebarOpen={sidebarOpen} onCloseSidebar={() => setSidebarOpen(false)} traceOpen={traceOpen} setTraceOpen={setTraceOpen} tokenStats={tokenStats} setTokenStats={setTokenStats} />} />
         <Route path="/agents" element={<AgentConfigPage />} />
         <Route path="/memory" element={<PrivateRoute><MemoryPage /></PrivateRoute>} />
+        <Route path="/mcp" element={<PrivateRoute><MCPPage /></PrivateRoute>} />
+        <Route path="/pipeline" element={<PrivateRoute><PipelinePage /></PrivateRoute>} />
+        <Route path="/monitor" element={<PrivateRoute><MonitorPage /></PrivateRoute>} />
+        <Route path="/schedule" element={<PrivateRoute><SchedulePage /></PrivateRoute>} />
       </Routes>
+      {cmdOpen && <CommandPalette onClose={() => setCmdOpen(false)} />}
     </div>
   )
 }

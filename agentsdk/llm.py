@@ -267,48 +267,59 @@ class RetryableLLMProvider:
 # ---------------------------------------------------------------------------
 
 _XML_TOOL_RE = re.compile(r"<function/(\w+)")
+# Matches the closing body format: <function/name>JSON_BODY</function>
+_XML_TOOL_BODY_RE = re.compile(r"<function/(\w+)>(.*?)</function>", re.DOTALL)
 
 
 def _parse_xml_tool_calls(content: str) -> list[ToolCall]:
     """Parse LLaMA-style XML tool calls from plain-text model content.
 
-    Handles the format emitted by some Groq-hosted models when they fall back
-    to their internal chat-template tool-calling syntax::
-
-        <function/tool_name{"arg1": "val1", "arg2": 42}></function>
-
-    Uses :meth:`json.JSONDecoder.raw_decode` to robustly handle JSON objects
-    whose string values may themselves contain ``{`` / ``}`` characters
-    (e.g. Python code blocks).
+    Handles two formats emitted by Groq-hosted models:
+      Format A (inline JSON): <function/tool_name{"arg": "val"}></function>
+      Format B (body JSON):   <function/tool_name>{"arg": "val"}</function>
 
     Returns an empty list when no valid tool calls are found.
     """
     decoder = json.JSONDecoder()
     tool_calls: list[ToolCall] = []
+    seen_positions: set[int] = set()
 
+    # ── Format B: <function/name>JSON</function> ──────────────────────────
+    for match in _XML_TOOL_BODY_RE.finditer(content):
+        name = match.group(1)
+        body = match.group(2).strip()
+        try:
+            arguments, _ = decoder.raw_decode(body)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(arguments, dict):
+            continue
+        tool_calls.append(ToolCall(
+            id=f"xml_{uuid.uuid4().hex[:8]}",
+            name=name,
+            arguments=arguments,
+        ))
+        seen_positions.add(match.start())
+
+    # ── Format A: <function/name{...}></function> ─────────────────────────
     for match in _XML_TOOL_RE.finditer(content):
+        if match.start() in seen_positions:
+            continue  # already handled by Format B
         name = match.group(1)
         json_start = match.end()
-
-        # Expect the JSON object to start immediately after the tool name.
         if json_start >= len(content) or content[json_start] != "{":
             continue
-
         try:
             arguments, _ = decoder.raw_decode(content, json_start)
         except json.JSONDecodeError:
             continue
-
         if not isinstance(arguments, dict):
             continue
-
-        tool_calls.append(
-            ToolCall(
-                id=f"xml_{uuid.uuid4().hex[:8]}",
-                name=name,
-                arguments=arguments,
-            )
-        )
+        tool_calls.append(ToolCall(
+            id=f"xml_{uuid.uuid4().hex[:8]}",
+            name=name,
+            arguments=arguments,
+        ))
 
     return tool_calls
 
@@ -319,6 +330,8 @@ class GroqProvider:
     Args:
         api_key: Groq API key. Defaults to the ``GROQ_API_KEY`` environment variable.
         model: Groq model identifier. Defaults to ``llama-3.3-70b-versatile``.
+        fallback_models: Ordered list of model IDs to try when the primary hits a
+            rate limit. Rotation is automatic and transparent to the caller.
 
     Example::
 
@@ -332,6 +345,7 @@ class GroqProvider:
         api_key: str | None = None,
         model: str = "llama-3.3-70b-versatile",
         retry_config: RetryConfig | None = None,
+        fallback_models: list[str] | None = None,
     ) -> None:
         try:
             import groq as _groq
@@ -342,6 +356,9 @@ class GroqProvider:
             ) from exc
 
         self._model = model
+        # All models in priority order: primary first, then fallbacks.
+        self._model_chain: list[str] = [model] + (fallback_models or [])
+        self._model_idx: int = 0  # index into _model_chain currently in use
         # Resolve the key once at construction time; fail fast if absent.
         resolved_key = api_key or os.environ.get("GROQ_API_KEY")
         self._client = AsyncGroq(api_key=resolved_key)
@@ -395,7 +412,22 @@ class GroqProvider:
         try:
             response = await self._client.chat.completions.create(**kwargs)
         except self._groq.RateLimitError as exc:
-            raise LLMRateLimitError(str(exc)) from exc
+            # Auto-rotate to the next model in the fallback chain.
+            if self._model_idx < len(self._model_chain) - 1:
+                prev = self._model_chain[self._model_idx]
+                self._model_idx += 1
+                self._model = self._model_chain[self._model_idx]
+                kwargs["model"] = self._model
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Rate limit on %s — auto-switching to fallback model %s", prev, self._model
+                )
+                try:
+                    response = await self._client.chat.completions.create(**kwargs)
+                except self._groq.RateLimitError as exc2:
+                    raise LLMRateLimitError(str(exc2)) from exc2
+            else:
+                raise LLMRateLimitError(str(exc)) from exc
         except self._groq.AuthenticationError as exc:
             raise LLMAuthError(str(exc)) from exc
         except self._groq.APIError as exc:

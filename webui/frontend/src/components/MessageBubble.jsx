@@ -8,28 +8,9 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 // Hook: stream text word-by-word when animate=true, show instantly otherwise
 // ---------------------------------------------------------------------------
 function useStreamText(fullText, animate) {
-  const [displayed, setDisplayed] = useState(fullText || '')
-
-  useEffect(() => {
-    if (!animate || !fullText) {
-      setDisplayed(fullText || '')
-      return
-    }
-    const words = fullText.split(' ')
-    let i = 0
-    setDisplayed('')
-    const interval = setInterval(() => {
-      if (i < words.length) {
-        setDisplayed(prev => prev + (i > 0 ? ' ' : '') + words[i])
-        i++
-      } else {
-        clearInterval(interval)
-      }
-    }, 30)
-    return () => clearInterval(interval)
-  }, [fullText, animate])
-
-  return displayed
+  // No artificial delay — show text immediately.
+  // The `animate` flag now only controls whether a CSS fade-in class is added.
+  return { displayed: fullText || '', done: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,16 +72,19 @@ function CodeBlock({ language, children }) {
 // ---------------------------------------------------------------------------
 // Typing indicator — animated three dots while agent is working
 // ---------------------------------------------------------------------------
-function TypingIndicator({ thought }) {
+function TypingIndicator({ thought, activeTool }) {
   return (
     <div className="bubble thinking-bubble">
-      <div className="typing-indicator">
-        <span /><span /><span />
+      <div className="thinking-indicator-row">
+        <div className="thinking-rings">
+          <div className="thinking-rings-dot" />
+        </div>
+        <span className="thinking-label">
+          {activeTool ? `using ${activeTool}…` : 'Thinking…'}
+        </span>
       </div>
-      {thought && (
-        <p className="thought-preview">
-          {thought.slice(0, 100)}{thought.length > 100 ? '…' : ''}
-        </p>
+      {thought && !activeTool && (
+        <p className="thought-preview">{thought.slice(0, 120)}{thought.length > 120 ? '…' : ''}</p>
       )}
     </div>
   )
@@ -111,19 +95,41 @@ function TypingIndicator({ thought }) {
 // ---------------------------------------------------------------------------
 export default function MessageBubble({ message }) {
   const isUser = message.role === 'user'
-  const displayedText = useStreamText(message.content, message.animate === true)
+  const { displayed: displayedText } = useStreamText(message.content, message.animate === true)
 
-  // Thinking state — show typing indicator while agent is reasoning.
+  // Thinking state — show pulsing neural indicator while agent is reasoning.
   if (message.thinking) {
+    // Strip raw XML tool calls from the live thought preview so they don't show as text
+    const cleanThought = message.thought
+      ? message.thought.replace(/<function\/\w+>[\s\S]*?<\/function>/g, '').trim()
+      : ''
     return (
-      <div className="bubble-row assistant">
-        <TypingIndicator thought={message.thought} />
+      <div className="bubble-row assistant msg-in">
+        {cleanThought ? (
+          <div className={['bubble', 'assistant-bubble'].join(' ')}>
+            <ReactMarkdown
+              components={{
+                code({ node, className, children }) {
+                  const match = /language-(\w+)/.exec(className || '')
+                  return match
+                    ? <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>
+                    : <code style={{ background: 'var(--bg-3)', padding: '1px 5px', borderRadius: 3, fontSize: '0.9em' }}>{children}</code>
+                }
+              }}
+            >
+              {cleanThought}
+            </ReactMarkdown>
+            <span className="tw-cursor" aria-hidden="true" />
+          </div>
+        ) : (
+          <TypingIndicator thought={message.thought} activeTool={message.activeTool} />
+        )}
       </div>
     )
   }
 
   return (
-    <div className={`bubble-row ${isUser ? 'user' : 'assistant'}`}>
+    <div className={`bubble-row ${isUser ? 'user' : 'assistant'} msg-in`}>
       <div
         className={[
           'bubble',
@@ -134,18 +140,20 @@ export default function MessageBubble({ message }) {
         {isUser ? (
           <p style={{ whiteSpace: 'pre-wrap' }}>{message.content}</p>
         ) : (
-          <ReactMarkdown
-            components={{
-              code({ node, className, children }) {
-                const match = /language-(\w+)/.exec(className || '')
-                return match
-                  ? <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>
-                  : <code style={{ background: 'var(--bg-3)', padding: '1px 5px', borderRadius: 3, fontSize: '0.9em' }}>{children}</code>
-              }
-            }}
-          >
-            {displayedText}
-          </ReactMarkdown>
+          <>
+            <ReactMarkdown
+              components={{
+                code({ node, className, children }) {
+                  const match = /language-(\w+)/.exec(className || '')
+                  return match
+                    ? <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>
+                    : <code style={{ background: 'var(--bg-3)', padding: '1px 5px', borderRadius: 3, fontSize: '0.9em' }}>{children}</code>
+                }
+              }}
+            >
+              {displayedText}
+            </ReactMarkdown>
+          </>
         )}
 
         {/* Token badge on assistant messages */}

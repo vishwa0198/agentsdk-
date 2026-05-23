@@ -1,6 +1,6 @@
 """RAG memory end-to-end validation script."""
-import asyncio
 import os
+import pytest
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -11,7 +11,10 @@ from agentsdk.memory.vector_store import VectorMemoryStore
 from agentsdk.memory.rag_memory import RAGMemory
 
 
-async def test():
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.skipif(not os.environ.get("GROQ_API_KEY"), reason="GROQ_API_KEY not set")
+async def test_rag_memory_integration():
     store = VectorMemoryStore(collection_name="test-agent")
     memory = RAGMemory(store=store, max_messages=20)
 
@@ -48,6 +51,3 @@ async def test():
     print("\n[Cleanup] Deleted session from vector store.")
 
     print("\n=== All turns completed successfully ===")
-
-
-asyncio.run(test())

@@ -5,10 +5,9 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
-    environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      # Set to 1 if you do NOT have Docker-in-Docker available for run_python sandboxing.
-      # - AGENTSDK_UNSAFE_PYTHON=1
+    env_file:
+      # Copy .env.example → .env and fill in your values before running.
+      - .env
     volumes:
       # Persist checkpoints and ChromaDB data across restarts.
       - ./data/checkpoints:/app/.agentsdk/checkpoints
@@ -21,6 +20,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 30s
 
   frontend:
     build: ./frontend

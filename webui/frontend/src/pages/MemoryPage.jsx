@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { getSessions, getMemories, searchMemory, deleteMemory, clearMemory, getMemoryStats } from '../lib/api.js'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { getSessions, getMemories, searchMemory, deleteMemory, clearMemory, getMemoryStats, ingestMemoryFile } from '../lib/api.js'
 import MemoryModal from '../components/MemoryModal.jsx'
 
 // ---------------------------------------------------------------------------
@@ -153,6 +153,103 @@ function StatChip({ label, value }) {
       <span style={{ color: 'var(--text-2)' }}>{label}:</span>{' '}
       <strong>{value}</strong>
     </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// File drop zone — ingest a file into RAG memory
+// ---------------------------------------------------------------------------
+function FileDropZone({ sessionId, onIngested }) {
+  const [dragging, setDragging] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [status, setStatus] = useState(null)  // { ok: bool, text: string }
+  const inputRef = useRef()
+
+  const ingest = useCallback(async (file) => {
+    if (!sessionId) {
+      setStatus({ ok: false, text: 'Select a session first.' })
+      return
+    }
+    setUploading(true)
+    setStatus(null)
+    try {
+      const res = await ingestMemoryFile(sessionId, file)
+      const d = res.data
+      setStatus({
+        ok: true,
+        text: `Ingested "${d.filename}" — ${d.chars.toLocaleString()} chars in ${d.chunks} chunk${d.chunks !== 1 ? 's' : ''}.`,
+      })
+      onIngested()
+    } catch (err) {
+      setStatus({ ok: false, text: err?.response?.data?.detail ?? err.message })
+    } finally {
+      setUploading(false)
+    }
+  }, [sessionId, onIngested])
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault()
+    setDragging(false)
+    const file = e.dataTransfer.files[0]
+    if (file) ingest(file)
+  }, [ingest])
+
+  const onFileChange = (e) => {
+    const file = e.target.files[0]
+    if (file) ingest(file)
+    e.target.value = ''
+  }
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div
+        onDragOver={e => { e.preventDefault(); setDragging(true) }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
+        onClick={() => inputRef.current?.click()}
+        style={{
+          border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`,
+          borderRadius: 10,
+          padding: '18px 20px',
+          background: dragging ? 'rgba(99,102,241,0.06)' : 'var(--bg-1)',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          transition: 'border-color 0.15s, background 0.15s',
+        }}
+      >
+        <span style={{ fontSize: 22 }}>{uploading ? '⏳' : '📎'}</span>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-0)' }}>
+            {uploading ? 'Ingesting…' : 'Ingest file into memory'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
+            Drop a .txt, .pdf, .md, .py, .json, .csv file — or click to browse
+          </div>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".txt,.md,.pdf,.csv,.py,.js,.ts,.json,.yaml,.yml,.rst,.log"
+          style={{ display: 'none' }}
+          onChange={onFileChange}
+        />
+      </div>
+      {status && (
+        <div style={{
+          marginTop: 8,
+          padding: '8px 12px',
+          borderRadius: 6,
+          fontSize: 12,
+          background: status.ok ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
+          color: status.ok ? '#16a34a' : 'var(--error, #ef4444)',
+          border: `1px solid ${status.ok ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
+        }}>
+          {status.ok ? '✓ ' : '✗ '}{status.text}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -322,7 +419,13 @@ export default function MemoryPage() {
         </div>
       )}
 
-      {/* ── Section 2: Semantic search ───────────────────────────────────── */}
+      {/* ── Section 2: File ingest ───────────────────────────────────────── */}
+      <FileDropZone
+        sessionId={selectedSession}
+        onIngested={() => loadMemories(selectedSession)}
+      />
+
+      {/* ── Section 3: Semantic search ───────────────────────────────────── */}
       <div style={{
         background: 'var(--bg-1)', borderRadius: 10, padding: '16px 18px',
         marginBottom: 20, border: '1px solid var(--border)',

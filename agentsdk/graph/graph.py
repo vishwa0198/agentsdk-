@@ -5,7 +5,6 @@ AgentGraph — DAG container with Kahn's-algorithm topological sort.
 
 from __future__ import annotations
 
-from typing import Any
 
 from agentsdk.graph.node import AgentNode, Edge
 

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-sdk:
+    name: SDK tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install SDK + test deps
+        run: |
+          pip install -e ".[rag]"
+          pip install pytest pytest-asyncio
+
+      - name: Run SDK tests
+        run: pytest tests/ -x -q --tb=short
+
+  test-backend:
+    name: Backend smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend deps
+        run: pip install -r webui/backend/requirements.txt
+
+      - name: Import check (catches missing deps & syntax errors)
+        working-directory: webui/backend
+        env:
+          SECRET_KEY: test-secret-key-for-ci
+          GROQ_API_KEY: dummy
+        run: python -c "import main; print('backend imports OK')"
+
+  lint-frontend:
+    name: Frontend build check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: webui/frontend/package-lock.json
+
+      - name: Install deps
+        working-directory: webui/frontend
+        run: npm ci
+
+      - name: Build (catches JSX/import errors)
+        working-directory: webui/frontend
+        run: npm run build

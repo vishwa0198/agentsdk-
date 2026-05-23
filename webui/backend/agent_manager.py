@@ -7,8 +7,6 @@ Handles creation, session listing, and deletion.
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv, find_dotenv
 
@@ -26,6 +24,7 @@ from agentsdk.tools.builtin import (
     write_file,
 )
 from agentsdk.tools.registry import ToolRegistry
+from agentsdk.mcp.client import MCPTool
 
 from models import SessionInfo
 
@@ -58,7 +57,7 @@ class AgentManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def get_or_create(self, session_id: str, agent_name: str = "WebAgent") -> Agent:
+    def get_or_create(self, session_id: str, agent_name: str = "WebAgent", system_prompt: str | None = None) -> Agent:
         """Return the cached Agent for *session_id*, or build a new one.
 
         Each session gets its own ChromaDB collection (named after
@@ -81,16 +80,31 @@ class AgentManager:
         )
 
         # ── LLM ───────────────────────────────────────────────────────────
-        model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-        llm = GroqProvider(api_key=os.environ["GROQ_API_KEY"], model=model)
+        # Primary model from env; fallback chain tried automatically on rate limit.
+        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+        _FALLBACK_MODELS = [
+            "llama-3.3-70b-versatile",
+            "gemma2-9b-it",
+            "llama-3.1-8b-instant",
+            "llama3-8b-8192",
+        ]
+        # Build fallback list: all models except the primary (avoid duplicates).
+        fallbacks = [m for m in _FALLBACK_MODELS if m != model]
+        llm = GroqProvider(
+            api_key=os.environ["GROQ_API_KEY"],
+            model=model,
+            fallback_models=fallbacks,
+        )
 
         config = AgentConfig(
             name=agent_name,
-            system_prompt=(
+            system_prompt=system_prompt or (
                 "You are a helpful AI assistant with access to tools. "
                 "Use them when needed. For simple factual questions, answer directly."
             ),
             max_iterations=10,
+            max_tokens=2048,
+            max_history_messages=8,
             verbose=True,
         )
 
@@ -144,3 +158,17 @@ class AgentManager:
 
         # Evict cached Agent so a new session_id can be reused cleanly.
         self._agents.pop(session_id, None)
+
+    def sync_mcp_tools(self, session_id: str, mcp_tools: list[MCPTool]) -> None:
+        """Replace all MCPTool entries in the agent's tool list with the current set.
+
+        Called before every ``agent.run()`` in the WebSocket handler so the
+        agent always sees the latest set of connected MCP tools.
+        """
+        if session_id not in self._agents:
+            return
+        agent = self._agents[session_id]
+        # Keep all non-MCP tools (built-ins); replace MCP tools wholesale.
+        non_mcp = [t for t in agent._tools if not isinstance(t, MCPTool)]
+        agent._tools = non_mcp + list(mcp_tools)
+        agent._tool_map = {t.schema.name: t for t in agent._tools}

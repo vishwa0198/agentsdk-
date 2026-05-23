@@ -59,3 +59,119 @@ class TokenResponse(BaseModel):
 class UserInfo(BaseModel):
     username: str
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# MCP models
+# ---------------------------------------------------------------------------
+
+class AddMCPServerRequest(BaseModel):
+    """Request body for POST /mcp/servers."""
+    name: str
+    transport: str          # "stdio" | "sse" | "http"
+    # stdio
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    # sse / http
+    url: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Pipeline models
+# ---------------------------------------------------------------------------
+
+class PipelineNodeConfig(BaseModel):
+    """Configuration for one agent node in a pipeline."""
+    id: str
+    name: str
+    system_prompt: str = "You are a helpful assistant."
+    model: str = "llama-3.1-8b-instant"
+    max_iterations: int = 5
+    input_key: str = "input"
+    output_key: str = "output"
+    position: dict[str, float] = {}   # {x, y} — stored for the canvas only
+
+
+class PipelineEdgeConfig(BaseModel):
+    """A directed connection between two nodes."""
+    from_node: str
+    to_node: str
+    data_map: dict[str, str] = {}     # {upstream_key: downstream_key}
+
+
+class PipelineConfig(BaseModel):
+    """Full pipeline definition — nodes + edges + entry/exit."""
+    id: str
+    name: str
+    nodes: list[PipelineNodeConfig] = []
+    edges: list[PipelineEdgeConfig] = []
+    entry_node: str | None = None
+    exit_node: str | None = None
+
+
+class PipelineRunRequest(BaseModel):
+    """Request body for POST /pipelines/run (ad-hoc) or POST /pipelines/{id}/run."""
+    pipeline: PipelineConfig | None = None   # omit to run a saved pipeline
+    input: str = ""
+
+
+class PipelineNodeResult(BaseModel):
+    node_id: str
+    name: str
+    output: str
+    success: bool
+    error: str | None = None
+
+
+class PipelineRunResult(BaseModel):
+    success: bool
+    final_output: str | None = None
+    node_results: list[PipelineNodeResult] = []
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# File upload models
+# ---------------------------------------------------------------------------
+
+class FileUploadResult(BaseModel):
+    """Response from POST /upload."""
+    file_id: str
+    filename: str
+    type: str           # "pdf" | "csv" | "image" | "text" | "error"
+    mime: str
+    size: int
+    text: str | None = None    # extracted text (omitted for images)
+    has_text: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Schedule models
+# ---------------------------------------------------------------------------
+
+class CreateScheduleRequest(BaseModel):
+    name: str
+    agent_name: str = "WebAgent"
+    input_message: str
+    trigger_type: str = "interval"   # "interval" | "cron"
+    interval_seconds: int = 3600
+    cron: str = "0 * * * *"
+    enabled: bool = True
+
+
+class ScheduleResponse(BaseModel):
+    id: str
+    name: str
+    agent_name: str
+    input_message: str
+    username: str
+    trigger_type: str
+    interval_seconds: int
+    cron: str
+    enabled: bool
+    webhook_token: str
+    created_at: str
+    last_run_at: str | None = None
+    last_run_ok: bool | None = None
+    last_output: str | None = None

@@ -57,6 +57,11 @@ class AgentConfig(BaseModel):
     verbose: bool = False
     """Print each iteration's thought and tool calls to stdout (dev convenience)."""
 
+    max_history_messages: int = 8
+    """Maximum number of non-system messages kept in context per LLM call.
+    The system prompt is always preserved. Older messages are silently dropped
+    to prevent token-limit errors on long sessions. Set 0 to disable."""
+
 
 # ---------------------------------------------------------------------------
 # StepResult
@@ -201,8 +206,24 @@ class Agent:
 
         try:
             for iteration in range(1, self.config.max_iterations + 1):
+                # Truncate history to avoid exceeding model TPM/context limits.
+                # Always keeps the system prompt; drops the oldest non-system
+                # messages when history exceeds max_history_messages.
+                llm_history = history
+                limit = self.config.max_history_messages
+                if limit > 0 and len(history) > limit + 1:
+                    all_msgs = history.get_all()
+                    system_msgs = [m for m in all_msgs if m.role.value == "system"]
+                    non_system = [m for m in all_msgs if m.role.value != "system"]
+                    truncated = MessageHistory()
+                    for m in system_msgs:
+                        truncated.add(m)
+                    for m in non_system[-limit:]:
+                        truncated.add(m)
+                    llm_history = truncated
+
                 response = await self._llm.complete(
-                    history,
+                    llm_history,
                     tools=tool_schemas,
                     max_tokens=self.config.max_tokens,
                 )
