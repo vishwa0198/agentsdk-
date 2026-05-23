@@ -10,6 +10,7 @@ All tests are fully offline — no real LLM calls, no network, no ChromaDB.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -37,9 +38,12 @@ from file_handler import MAX_FILE_BYTES, extract_text
 
 
 def _import_backend_main():
-    """Import webui/backend/main.py via the sys.path entry configured above."""
+    """Import webui/backend/main.py explicitly from its file path."""
     try:
-        import main as app_module
+        spec = importlib.util.spec_from_file_location("webui_backend_main", _BACKEND / "main.py")
+        assert spec is not None and spec.loader is not None
+        app_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(app_module)
     except ModuleNotFoundError as exc:
         pytest.skip(f"webui backend dependency not installed: {exc.name}")
     return app_module
