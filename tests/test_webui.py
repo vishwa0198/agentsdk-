@@ -37,6 +37,7 @@ from file_handler import MAX_FILE_BYTES, extract_text
 
 
 def _import_backend_main():
+    """Import webui/backend/main.py via the sys.path entry configured above."""
     try:
         import main as app_module
     except ModuleNotFoundError as exc:
