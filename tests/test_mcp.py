@@ -178,25 +178,28 @@ class TestMCPClientConnect:
 
         if transport == "stdio":
             client = MCPClient("srv", transport="stdio", command="npx", args=[])
-            patch_path = "mcp.client.stdio.stdio_client"
+            patch_path = "agentsdk.mcp.client._get_stdio_client"
         elif transport == "sse":
             client = MCPClient("srv", transport="sse", url="http://localhost/sse")
-            patch_path = "mcp.client.sse.sse_client"
+            patch_path = "agentsdk.mcp.client._get_sse_client"
         else:
             client = MCPClient("srv", transport="http", url="http://localhost/mcp")
-            patch_path = "mcp.client.streamable_http.streamablehttp_client"
+            patch_path = "agentsdk.mcp.client._get_streamablehttp_client"
 
         mock_ctx = MagicMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=rw if transport != "http" else rw_http)
         mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        transport_client = MagicMock(return_value=mock_ctx)
 
         session_ctx = MagicMock()
         session_ctx.__aenter__ = AsyncMock(return_value=session)
         session_ctx.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch(patch_path, return_value=mock_ctx),
-            patch("mcp.ClientSession", return_value=session_ctx),
+            patch("agentsdk.mcp.client._require_mcp", return_value=object()),
+            patch(patch_path, return_value=transport_client),
+            patch("agentsdk.mcp.client._get_client_session", return_value=MagicMock(return_value=session_ctx)),
+            patch("agentsdk.mcp.client._get_stdio_server_parameters", return_value=MagicMock()),
         ):
             tools = await client.connect()
 

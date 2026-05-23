@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack
+from importlib import import_module
 from typing import Any
 
 from agentsdk.llm import ToolSchema
@@ -53,6 +54,26 @@ def _require_mcp() -> Any:
             "The 'mcp' package is required for MCP integration. "
             "Install it with:  pip install 'agentsdk-py[mcp]'  or  pip install mcp"
         ) from exc
+
+
+def _get_client_session() -> Any:
+    return import_module("mcp").ClientSession
+
+
+def _get_stdio_client() -> Any:
+    return import_module("mcp.client.stdio").stdio_client
+
+
+def _get_sse_client() -> Any:
+    return import_module("mcp.client.sse").sse_client
+
+
+def _get_streamablehttp_client() -> Any:
+    return import_module("mcp.client.streamable_http").streamablehttp_client
+
+
+def _get_stdio_server_parameters() -> Any:
+    return import_module("mcp").StdioServerParameters
 
 
 # ---------------------------------------------------------------------------
@@ -194,12 +215,11 @@ class MCPClient:
 
         _require_mcp()
 
-        from mcp import ClientSession, StdioServerParameters  # type: ignore[import]
-
         logger.info("MCPClient '%s': connecting via %s", self.name, self.transport)
 
         if self.transport == "stdio":
-            from mcp.client.stdio import stdio_client  # type: ignore[import]
+            stdio_client = _get_stdio_client()
+            StdioServerParameters = _get_stdio_server_parameters()
             read, write = await self._exit_stack.enter_async_context(
                 stdio_client(StdioServerParameters(
                     command=self._command,
@@ -208,16 +228,17 @@ class MCPClient:
                 ))
             )
         elif self.transport == "sse":
-            from mcp.client.sse import sse_client  # type: ignore[import]
+            sse_client = _get_sse_client()
             read, write = await self._exit_stack.enter_async_context(
                 sse_client(self._url)
             )
         else:  # http — streamable HTTP (MCP ≥1.0)
-            from mcp.client.streamable_http import streamablehttp_client  # type: ignore[import]
+            streamablehttp_client = _get_streamablehttp_client()
             read, write, _ = await self._exit_stack.enter_async_context(
                 streamablehttp_client(self._url)
             )
 
+        ClientSession = _get_client_session()
         session = await self._exit_stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         self._session = session
