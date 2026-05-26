@@ -1,0 +1,18 @@
+# Exclude everything except what the backend Docker build needs
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+.git
+.conda
+.github
+site/
+docs/
+launch/
+projects/
+tests/
+webui/frontend/
+webui/data/
+agentsdk.egg-info/
+agentsdk_py.egg-info/
+*.md

@@ -1,11 +1,10 @@
 """agentsdk/llm.py
 
-LLM provider abstraction — Groq backend with a swappable Protocol interface.
+LLM provider abstraction — Ollama backend with a swappable Protocol interface.
 
 Import chain:
     agent loop → LLMProvider (Protocol)
-                  └── GroqProvider (concrete)
-                  └── AnthropicProvider (stub)
+                  └── OllamaProvider (concrete, local Ollama server)
 
 Provider-specific quirks stay fully inside each provider class.
 The agent loop only ever calls ``LLMProvider.complete()``.
@@ -78,7 +77,7 @@ class LLMProvider(Protocol):
     """Interface every LLM provider must satisfy.
 
     The agent loop is typed against this Protocol — it never touches
-    GroqProvider or AnthropicProvider directly.
+    OllamaProvider directly.
     """
 
     async def complete(
@@ -90,7 +89,7 @@ class LLMProvider(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Finish-reason normalisation (Groq/OpenAI → SDK canonical names)
+# Finish-reason normalisation (OpenAI/Ollama → SDK canonical names)
 # ---------------------------------------------------------------------------
 
 _FINISH_REASON_MAP: dict[str, str] = {
@@ -203,7 +202,7 @@ class RetryableLLMProvider:
     Example::
 
         llm = RetryableLLMProvider(
-            provider=GroqProvider(api_key="..."),
+            provider=OllamaProvider(),
             config=RetryConfig(max_retries=5, base_delay=0.5),
         )
     """
@@ -258,12 +257,12 @@ class RetryableLLMProvider:
 
 
 # ---------------------------------------------------------------------------
-# Groq provider
+# Ollama provider
 # ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
-# XML text-mode tool-call parser
+# XML text-mode tool-call parser (LLaMA chat-template fallback)
 # ---------------------------------------------------------------------------
 
 _XML_TOOL_RE = re.compile(r"<function/(\w+)")
@@ -274,7 +273,8 @@ _XML_TOOL_BODY_RE = re.compile(r"<function/(\w+)>(.*?)</function>", re.DOTALL)
 def _parse_xml_tool_calls(content: str) -> list[ToolCall]:
     """Parse LLaMA-style XML tool calls from plain-text model content.
 
-    Handles two formats emitted by Groq-hosted models:
+    Handles two formats some LLaMA-family models emit when they fall back to
+    their internal chat-template format:
       Format A (inline JSON): <function/tool_name{"arg": "val"}></function>
       Format B (body JSON):   <function/tool_name>{"arg": "val"}</function>
 
@@ -324,47 +324,127 @@ def _parse_xml_tool_calls(content: str) -> list[ToolCall]:
     return tool_calls
 
 
-class GroqProvider:
-    """LLM provider backed by Groq's async Python SDK.
+# ---------------------------------------------------------------------------
+# Text-mode tool injection helpers (fallback for models without native tools)
+# ---------------------------------------------------------------------------
+
+def _build_tool_injection_prompt(tools: list[ToolSchema]) -> str:
+    """Build a system prompt block describing tools for text-mode tool calling.
+
+    Used when the model does not support the OpenAI tool schema.  The model is
+    instructed to emit ``TOOL_CALL: <JSON>`` lines instead of structured calls.
+    """
+    lines = [
+        "You have access to the following tools. To call a tool, output EXACTLY one line:",
+        "TOOL_CALL: {\"name\": \"<tool_name>\", \"arguments\": {<args_as_json>}}",
+        "Output only the TOOL_CALL line — no other text on that line. "
+        "Wait for the tool result before continuing.",
+        "",
+        "Available tools:",
+    ]
+    for t in tools:
+        props = t.parameters.get("properties", {})
+        arg_list = ", ".join(
+            f"{k}: {v.get('type', 'any')}" for k, v in props.items()
+        )
+        lines.append(f"  - {t.name}({arg_list}): {t.description}")
+    return "\n".join(lines)
+
+
+_TEXT_TOOL_CALL_RE = re.compile(r"TOOL_CALL:\s*(\{)", re.IGNORECASE)
+
+
+def _parse_text_tool_calls(content: str) -> list[ToolCall]:
+    """Extract ``TOOL_CALL: <JSON>`` lines from plain model text.
+
+    Uses JSONDecoder.raw_decode so nested objects are handled correctly.
+    Returns an empty list when no valid tool calls are found.
+    """
+    decoder = json.JSONDecoder()
+    tool_calls: list[ToolCall] = []
+    for match in _TEXT_TOOL_CALL_RE.finditer(content):
+        # raw_decode from the opening brace position
+        json_start = match.start(1)
+        try:
+            obj, _ = decoder.raw_decode(content, json_start)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        name = obj.get("name")
+        arguments = obj.get("arguments", {})
+        if not name or not isinstance(arguments, dict):
+            continue
+        tool_calls.append(ToolCall(
+            id=f"txt_{uuid.uuid4().hex[:8]}",
+            name=name,
+            arguments=arguments,
+        ))
+    return tool_calls
+
+
+def _strip_tool_call_lines(content: str) -> str:
+    """Remove ``TOOL_CALL: <JSON>`` spans from *content* using raw_decode.
+
+    Strips everything from ``TOOL_CALL:`` to the end of the JSON object so
+    the remaining text is clean prose without partial JSON fragments.
+    """
+    decoder = json.JSONDecoder()
+    result = content
+    # Iterate in reverse so span indices stay valid after each removal.
+    spans: list[tuple[int, int]] = []
+    for match in _TEXT_TOOL_CALL_RE.finditer(content):
+        json_start = match.start(1)
+        try:
+            _, end_offset = decoder.raw_decode(content, json_start)
+            spans.append((match.start(), end_offset))
+        except json.JSONDecodeError:
+            spans.append((match.start(), match.end()))
+
+    for start, end in reversed(spans):
+        # Also strip a trailing newline if present.
+        tail = end if end >= len(result) or result[end] != "\n" else end + 1
+        result = result[:start] + result[tail:]
+    return result
+
+
+class OllamaProvider:
+    """LLM provider backed by a local Ollama server.
+
+    Uses Ollama's OpenAI-compatible endpoint — no API key required.
+    Ollama must be running (``ollama serve``) before calling :meth:`complete`.
 
     Args:
-        api_key: Groq API key. Defaults to the ``GROQ_API_KEY`` environment variable.
-        model: Groq model identifier. Defaults to ``llama-3.3-70b-versatile``.
-        fallback_models: Ordered list of model IDs to try when the primary hits a
-            rate limit. Rotation is automatic and transparent to the caller.
+        model: Ollama model identifier. Defaults to ``llama3:8b``.
+            Any model returned by ``ollama list`` can be used.
+        base_url: Ollama server root URL. Defaults to the ``OLLAMA_HOST``
+            environment variable, falling back to ``http://localhost:11434``.
+        retry_config: Optional retry/circuit-breaker configuration.
 
     Example::
 
-        import os
-        llm = GroqProvider(api_key=os.environ["GROQ_API_KEY"])
+        llm = OllamaProvider()  # llama3:8b @ localhost:11434
         response = await llm.complete(history, max_tokens=512)
+
+        # Use a different local model
+        llm = OllamaProvider(model="deepseek-coder:6.7b")
     """
 
     def __init__(
         self,
-        api_key: str | None = None,
-        model: str = "llama-3.3-70b-versatile",
+        model: str = "llama3:8b",
+        base_url: str | None = None,
         retry_config: RetryConfig | None = None,
-        fallback_models: list[str] | None = None,
     ) -> None:
-        try:
-            import groq as _groq
-            from groq import AsyncGroq
-        except ImportError as exc:
-            raise ImportError(
-                "groq is not installed. Run: pip install groq"
-            ) from exc
+        import httpx
 
         self._model = model
-        # All models in priority order: primary first, then fallbacks.
-        self._model_chain: list[str] = [model] + (fallback_models or [])
-        self._model_idx: int = 0  # index into _model_chain currently in use
-        # Resolve the key once at construction time; fail fast if absent.
-        resolved_key = api_key or os.environ.get("GROQ_API_KEY")
-        self._client = AsyncGroq(api_key=resolved_key)
-        # Keep a reference to the module so complete() can catch its errors.
-        self._groq = _groq
-        # Wrap with retry/circuit-breaker if a config was provided.
+        resolved_url = (
+            base_url
+            or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        ).rstrip("/")
+        self._base_url = resolved_url
+        self._client = httpx.AsyncClient(base_url=resolved_url, timeout=120.0)
         self._retry_wrapper: RetryableLLMProvider | None = (
             RetryableLLMProvider(_BoundProvider(self._complete_once), retry_config)
             if retry_config else None
@@ -376,7 +456,7 @@ class GroqProvider:
         tools: list[ToolSchema] | None = None,
         max_tokens: int = 1024,
     ) -> LLMResponse:
-        """Send *history* to Groq, optionally via retry/circuit-breaker wrapper."""
+        """Send *history* to Ollama, optionally via retry/circuit-breaker wrapper."""
         if self._retry_wrapper is not None:
             return await self._retry_wrapper.complete(history, tools, max_tokens)
         return await self._complete_once(history, tools, max_tokens)
@@ -387,17 +467,24 @@ class GroqProvider:
         tools: list[ToolSchema] | None = None,
         max_tokens: int = 1024,
     ) -> LLMResponse:
-        """Single (non-retried) call to the Groq API."""
-        kwargs: dict[str, Any] = {
+        """Single (non-retried) call to the Ollama /v1/chat/completions endpoint.
+
+        If the model does not support native tool calling (Ollama returns 400),
+        falls back to text-injection mode: tool schemas are described in a system
+        prompt and the model is asked to emit ``TOOL_CALL: <JSON>`` lines.
+        """
+        import httpx
+
+        payload: dict[str, Any] = {
             "model": self._model,
-            # to_dict_list() already produces OpenAI-compatible dicts, which
-            # Groq accepts unchanged — zero transformation needed here.
+            # to_dict_list() already produces OpenAI-compatible dicts.
             "messages": history.to_dict_list(),
             "max_tokens": max_tokens,
+            "stream": False,
         }
 
         if tools:
-            kwargs["tools"] = [
+            payload["tools"] = [
                 {
                     "type": "function",
                     "function": {
@@ -410,77 +497,149 @@ class GroqProvider:
             ]
 
         try:
-            response = await self._client.chat.completions.create(**kwargs)
-        except self._groq.RateLimitError as exc:
-            # Auto-rotate to the next model in the fallback chain.
-            if self._model_idx < len(self._model_chain) - 1:
-                prev = self._model_chain[self._model_idx]
-                self._model_idx += 1
-                self._model = self._model_chain[self._model_idx]
-                kwargs["model"] = self._model
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "Rate limit on %s — auto-switching to fallback model %s", prev, self._model
-                )
-                try:
-                    response = await self._client.chat.completions.create(**kwargs)
-                except self._groq.RateLimitError as exc2:
-                    raise LLMRateLimitError(str(exc2)) from exc2
-            else:
-                raise LLMRateLimitError(str(exc)) from exc
-        except self._groq.AuthenticationError as exc:
-            raise LLMAuthError(str(exc)) from exc
-        except self._groq.APIError as exc:
+            response = await self._client.post("/v1/chat/completions", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise LLMAuthError(str(exc)) from exc
+            # ── Tool-call 400 fallback ────────────────────────────────────
+            # Models like llama3:8b do not support the OpenAI tool schema over
+            # Ollama's /v1 endpoint and return 400.  Retry without the tools
+            # field and instead inject a text description so the model can still
+            # call tools using a simple JSON line format.
+            if exc.response.status_code == 400 and tools:
+                return await self._complete_text_tool_mode(history, tools, max_tokens)
             raise LLMProviderError(str(exc)) from exc
+        except httpx.RequestError as exc:
+            raise LLMProviderError(
+                f"Cannot connect to Ollama at {self._base_url}. "
+                "Make sure it is running: ollama serve"
+            ) from exc
 
-        choice = response.choices[0]
-        raw_msg = choice.message
-        finish_reason: str = choice.finish_reason or "stop"
-        content: str = raw_msg.content or ""
+        return self._parse_response(response.json())
+
+    async def _complete_text_tool_mode(
+        self,
+        history: MessageHistory,
+        tools: list[ToolSchema],
+        max_tokens: int,
+    ) -> LLMResponse:
+        """Fallback for models that reject native tool schemas.
+
+        Describes tools in the system prompt and parses ``TOOL_CALL: <JSON>``
+        lines from the plain-text response.  Tool-result messages (role=tool)
+        are converted to plain user messages so the model can read them.
+        """
+        import httpx
+
+        tool_block = _build_tool_injection_prompt(tools)
+
+        # Convert the history to OpenAI-compatible dicts, then:
+        #   1. Merge tool description block into the system message.
+        #   2. Replace role="tool" messages with role="user" messages so
+        #      models that don't understand the tool role can still read results.
+        original_msgs = history.to_dict_list()
+        messages: list[dict[str, Any]] = []
+        for msg in original_msgs:
+            if msg["role"] == "system":
+                # Only inject the block into the first system message.
+                if not any(m["role"] == "system" for m in messages):
+                    messages.append({"role": "system", "content": tool_block + "\n\n" + msg["content"]})
+                else:
+                    messages.append(msg)
+            elif msg["role"] == "tool":
+                # Convert tool result to a human-readable user message.
+                messages.append({
+                    "role": "user",
+                    "content": f"[Tool result]: {msg['content']}\nNow answer the user's question using this result.",
+                })
+            else:
+                messages.append(msg)
+
+        # If there was no system message, prepend the tool block.
+        if not any(m["role"] == "system" for m in messages):
+            messages.insert(0, {"role": "system", "content": tool_block})
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+
+        try:
+            response = await self._client.post("/v1/chat/completions", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise LLMAuthError(str(exc)) from exc
+            raise LLMProviderError(str(exc)) from exc
+        except httpx.RequestError as exc:
+            raise LLMProviderError(
+                f"Cannot connect to Ollama at {self._base_url}. "
+                "Make sure it is running: ollama serve"
+            ) from exc
+
+        result = self._parse_response(response.json())
+
+        # Parse TOOL_CALL lines from plain text if no structured calls came back.
+        if not result.message.tool_calls and result.message.content:
+            text_calls = _parse_text_tool_calls(result.message.content)
+            if text_calls:
+                # Strip TOOL_CALL lines — find each call's span and remove it.
+                clean_content = _strip_tool_call_lines(result.message.content).strip()
+                return LLMResponse(
+                    message=AIMessage(content=clean_content, tool_calls=text_calls),
+                    model=result.model,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    stop_reason="tool_use",
+                )
+        return result
+
+    def _parse_response(self, data: dict[str, Any]) -> LLMResponse:
+        """Convert a raw /v1/chat/completions response dict to LLMResponse."""
+        choice = data["choices"][0]
+        raw_msg: dict[str, Any] = choice["message"]
+        finish_reason: str = choice.get("finish_reason") or "stop"
+        content: str = raw_msg.get("content") or ""
 
         # Parse tool calls from the response into SDK-native ToolCall objects.
         parsed_tool_calls: list[ToolCall] = []
-        if raw_msg.tool_calls:
-            for tc in raw_msg.tool_calls:
-                try:
-                    # arguments may be None or JSON null for zero-parameter tools.
-                    arguments: dict[str, Any] = json.loads(tc.function.arguments or "{}") or {}
-                except (json.JSONDecodeError, TypeError):
-                    # Malformed JSON from the model — preserve raw string.
-                    arguments = {"_raw": tc.function.arguments}
-                parsed_tool_calls.append(
-                    ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=arguments,
-                    )
+        for tc in raw_msg.get("tool_calls") or []:
+            fn = tc["function"]
+            try:
+                arguments: dict[str, Any] = json.loads(fn.get("arguments") or "{}") or {}
+            except (json.JSONDecodeError, TypeError):
+                arguments = {"_raw": fn.get("arguments")}
+            parsed_tool_calls.append(
+                ToolCall(
+                    id=tc.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                    name=fn["name"],
+                    arguments=arguments,
                 )
+            )
 
         # ── XML text-mode tool-call fallback ──────────────────────────────
-        # Some Groq-hosted LLaMA variants fall back to their internal chat-
-        # template format and emit tool calls as plain text:
-        #   <function/tool_name{"arg": "val"}></function>
-        # When no structured tool_calls were parsed but the content contains
-        # this pattern, convert them to proper ToolCall objects so the agent
-        # loop can dispatch them normally.
+        # Some LLaMA variants fall back to their internal chat-template format
+        # and emit tool calls as plain text. Convert them to ToolCall objects.
         if not parsed_tool_calls and "<function/" in content:
             parsed_tool_calls = _parse_xml_tool_calls(content)
             if parsed_tool_calls:
-                finish_reason = "tool_calls"  # treat as tool_use
+                finish_reason = "tool_calls"
                 content = ""  # strip raw XML from the visible thought
 
         ai_message = AIMessage(
-            # content may be None when the model only emits tool calls.
             content=content,
             tool_calls=parsed_tool_calls,
         )
 
-        usage = response.usage
+        usage: dict[str, Any] = data.get("usage") or {}
         return LLMResponse(
             message=ai_message,
-            model=response.model or self._model,
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
+            model=data.get("model") or self._model,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
             stop_reason=_FINISH_REASON_MAP.get(finish_reason, finish_reason),
         )
 

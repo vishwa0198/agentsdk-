@@ -10,7 +10,7 @@ import os
 
 from dotenv import load_dotenv, find_dotenv
 
-from agentsdk import Agent, AgentConfig, GroqProvider
+from agentsdk import Agent, AgentConfig, OllamaProvider
 from agentsdk.memory.rag_memory import RAGMemory
 from agentsdk.memory.vector_store import VectorMemoryStore
 from agentsdk.persistence.checkpoint import Checkpoint
@@ -80,21 +80,9 @@ class AgentManager:
         )
 
         # ── LLM ───────────────────────────────────────────────────────────
-        # Primary model from env; fallback chain tried automatically on rate limit.
-        model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-        _FALLBACK_MODELS = [
-            "llama-3.3-70b-versatile",
-            "gemma2-9b-it",
-            "llama-3.1-8b-instant",
-            "llama3-8b-8192",
-        ]
-        # Build fallback list: all models except the primary (avoid duplicates).
-        fallbacks = [m for m in _FALLBACK_MODELS if m != model]
-        llm = GroqProvider(
-            api_key=os.environ["GROQ_API_KEY"],
-            model=model,
-            fallback_models=fallbacks,
-        )
+        # Model from env; defaults to llama3:8b (available locally via Ollama).
+        model = os.environ.get("OLLAMA_MODEL", "llama3:8b")
+        llm = OllamaProvider(model=model)
 
         config = AgentConfig(
             name=agent_name,

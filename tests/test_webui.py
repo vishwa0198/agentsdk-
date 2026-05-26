@@ -25,7 +25,7 @@ if str(_BACKEND) not in sys.path:
 
 # Set required env vars before importing main / pipeline_manager.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci-only")
-os.environ.setdefault("GROQ_API_KEY", "dummy")
+os.environ.setdefault("OLLAMA_MODEL", "llama3:8b")
 os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000")
 
 
@@ -235,3 +235,139 @@ class TestCORSSecurity:
         assert len(origins) == 2
         assert "https://app.example.com" in origins
         assert "https://preview.example.com" in origins
+
+
+# ---------------------------------------------------------------------------
+# Auth — register + login + token flow (uses FastAPI TestClient, no network)
+# ---------------------------------------------------------------------------
+
+class TestAuthFlow:
+    """End-to-end auth tests: register → login → /auth/me → bad credentials."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_users_file(self, tmp_path, monkeypatch):
+        """Redirect the users JSON store to a temp dir so tests are isolated."""
+        import auth as _auth
+        users_file = tmp_path / "users.json"
+        monkeypatch.setattr(_auth, "USERS_FILE", users_file)
+        # Replace the global user_store instance so it uses the patched path.
+        _auth.user_store = _auth.UserStore()
+        # Also patch the reference in main.py's already-imported module.
+        try:
+            import webui_backend_main as _main
+            _main.user_store = _auth.user_store
+        except ImportError:
+            pass
+        yield
+
+    @pytest.fixture()
+    def client(self):
+        """Return a FastAPI TestClient for the webui backend."""
+        from fastapi.testclient import TestClient
+        app_module = _import_backend_main()
+        # Re-point main.user_store after patching (autouse fixture runs first).
+        import auth as _auth
+        app_module.user_store = _auth.user_store
+        return TestClient(app_module.app, raise_server_exceptions=True)
+
+    # ── register ────────────────────────────────────────────────────────────
+
+    def test_register_success(self, client):
+        res = client.post("/auth/register", json={"username": "alice", "password": "secret123"})
+        assert res.status_code == 201
+        assert res.json() == {"message": "registered"}
+
+    def test_register_duplicate_username_rejected(self, client):
+        client.post("/auth/register", json={"username": "bob", "password": "pass1234"})
+        res = client.post("/auth/register", json={"username": "bob", "password": "other123"})
+        assert res.status_code == 400
+        assert "already taken" in res.json()["detail"].lower()
+
+    # ── login ────────────────────────────────────────────────────────────────
+
+    def test_login_returns_access_token(self, client):
+        client.post("/auth/register", json={"username": "carol", "password": "mypassword"})
+        res = client.post(
+            "/auth/login",
+            data={"username": "carol", "password": "mypassword"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert "access_token" in body
+        assert body["token_type"] == "bearer"
+        assert len(body["access_token"]) > 20
+
+    def test_login_wrong_password_returns_401(self, client):
+        client.post("/auth/register", json={"username": "dave", "password": "correct123"})
+        res = client.post(
+            "/auth/login",
+            data={"username": "dave", "password": "wrongpass"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert res.status_code == 401
+
+    def test_login_unknown_user_returns_401(self, client):
+        res = client.post(
+            "/auth/login",
+            data={"username": "ghost", "password": "anything"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert res.status_code == 401
+
+    # ── /auth/me with valid token ────────────────────────────────────────────
+
+    def test_me_returns_username_with_valid_token(self, client):
+        client.post("/auth/register", json={"username": "eve", "password": "evespass"})
+        login_res = client.post(
+            "/auth/login",
+            data={"username": "eve", "password": "evespass"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        token = login_res.json()["access_token"]
+        me_res = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me_res.status_code == 200
+        assert me_res.json()["username"] == "eve"
+
+    def test_me_without_token_returns_401(self, client):
+        res = client.get("/auth/me")
+        assert res.status_code == 401
+
+    def test_me_with_invalid_token_returns_401(self, client):
+        res = client.get("/auth/me", headers={"Authorization": "Bearer this.is.garbage"})
+        assert res.status_code == 401
+
+    # ── token JWT structure ───────────────────────────────────────────────────
+
+    def test_token_contains_sub_claim(self):
+        """JWT issued by create_access_token must have a 'sub' claim."""
+        from auth import create_access_token, decode_token
+        token = create_access_token({"sub": "frank"})
+        assert decode_token(token) == "frank"
+
+    def test_expired_token_is_rejected(self):
+        """A token with exp in the past must be decoded as None."""
+        from datetime import datetime, timezone, timedelta
+        from auth import SECRET_KEY, ALGORITHM
+        from jose import jwt
+        payload = {"sub": "grace", "exp": datetime.now(timezone.utc) - timedelta(seconds=1)}
+        expired_token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+        from auth import decode_token
+        assert decode_token(expired_token) is None
+
+    # ── password hashing ──────────────────────────────────────────────────────
+
+    def test_correct_password_verifies(self):
+        from auth import hash_password, verify_password
+        h = hash_password("hunter2")
+        assert verify_password("hunter2", h) is True
+
+    def test_wrong_password_fails_verification(self):
+        from auth import hash_password, verify_password
+        h = hash_password("hunter2")
+        assert verify_password("wrong", h) is False
+
+    def test_two_hashes_of_same_password_differ(self):
+        """bcrypt generates a new salt each time — hashes must not be equal."""
+        from auth import hash_password
+        assert hash_password("same") != hash_password("same")

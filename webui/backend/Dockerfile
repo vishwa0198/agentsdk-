@@ -8,10 +8,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Install local agentsdk from source (includes agentsdk.mcp not yet on PyPI)
+COPY agentsdk/ /tmp/agentsdk_src/agentsdk/
+COPY pyproject.toml /tmp/agentsdk_src/
+RUN pip install --no-cache-dir /tmp/agentsdk_src/
+
+# Install backend dependencies
+COPY webui/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY webui/backend/ .
 
 # Run as non-root user
 RUN useradd -m appuser && chown -R appuser /app

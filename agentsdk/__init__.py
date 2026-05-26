@@ -8,7 +8,7 @@ from agentsdk.messages import (
     SystemMessage,
     ToolResultMessage,
 )
-from agentsdk.llm import GroqProvider, LLMResponse, RetryConfig, RetryableLLMProvider, CircuitBreaker
+from agentsdk.llm import OllamaProvider, LLMResponse, RetryConfig, RetryableLLMProvider, CircuitBreaker
 from agentsdk.tools.base import tool, BaseTool
 from agentsdk.tools.registry import ToolRegistry
 from agentsdk.tools.builtin import DEFAULT_TOOLS
@@ -18,7 +18,7 @@ from agentsdk.graph.runner import GraphRunner
 from agentsdk.graph.bus import MessageBus, BusAwareAgent, BusRunner
 from agentsdk.persistence.file_store import FileCheckpointStore
 from agentsdk.persistence.session import SessionManager
-from agentsdk.memory.embedder import LocalEmbedder, GroqEmbedder
+from agentsdk.memory.embedder import LocalEmbedder
 from agentsdk.memory.vector_store import VectorMemoryStore
 from agentsdk.memory.rag_memory import RAGMemory
 from agentsdk.mcp.client import MCPClient, MCPTool
@@ -31,7 +31,7 @@ __all__ = [
     # Messages
     "MessageHistory", "HumanMessage", "AIMessage", "SystemMessage", "ToolResultMessage",
     # LLM
-    "GroqProvider", "LLMResponse",
+    "OllamaProvider", "LLMResponse",
     "RetryConfig", "RetryableLLMProvider", "CircuitBreaker",
     # Tools
     "tool", "BaseTool", "ToolRegistry", "DEFAULT_TOOLS",
@@ -42,7 +42,7 @@ __all__ = [
     # Persistence
     "FileCheckpointStore", "SessionManager",
     # Memory / RAG
-    "LocalEmbedder", "GroqEmbedder", "VectorMemoryStore", "RAGMemory",
+    "LocalEmbedder", "VectorMemoryStore", "RAGMemory",
     # MCP
     "MCPClient", "MCPTool",
     # Meta

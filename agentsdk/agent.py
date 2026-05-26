@@ -120,7 +120,7 @@ class Agent:
 
     Args:
         config: AgentConfig with name, system prompt, and settings.
-        llm: Any LLMProvider implementation — use GroqProvider.
+        llm: Any LLMProvider implementation — use OllamaProvider.
         tools: Optional flat list of BaseTool instances.
         memory: Optional Memory backend (legacy; prefer session_manager).
         registry: Optional ToolRegistry — merged with tools if both provided.
@@ -128,7 +128,7 @@ class Agent:
 
     Example::
 
-        llm = GroqProvider(api_key="...")
+        llm = OllamaProvider()
         config = AgentConfig(name="MyAgent", system_prompt="You are helpful.")
         agent = Agent(config=config, llm=llm)
         result = await agent.run("What is 2 + 2?")

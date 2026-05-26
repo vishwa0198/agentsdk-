@@ -15,7 +15,7 @@ if str(_BACKEND) not in sys.path:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "integration: marks tests as integration tests (require GROQ_API_KEY)",
+        "integration: marks tests as integration tests (require Ollama running)",
     )
     try:
         from dotenv import load_dotenv

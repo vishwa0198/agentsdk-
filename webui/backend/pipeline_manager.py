@@ -15,7 +15,7 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from agentsdk import Agent, AgentConfig, GroqProvider
+from agentsdk import Agent, AgentConfig, OllamaProvider
 from agentsdk.graph.graph import AgentGraph
 from agentsdk.graph.node import AgentNode, Edge, NodeInput, NodeOutput
 from agentsdk.tools.builtin import DEFAULT_TOOLS
@@ -117,7 +117,7 @@ class PipelineManager:
         if not config.exit_node:
             return PipelineRunResult(success=False, error="No exit node set.")
 
-        api_key = os.environ.get("GROQ_API_KEY", "")
+        api_key = ""  # Ollama is local — no API key required
         node_map: dict[str, PipelineNodeConfig] = {n.id: n for n in config.nodes}
 
         # Auto-wire sequential edges when none are drawn.
@@ -144,8 +144,8 @@ class PipelineManager:
         # Build the AgentGraph.
         graph = AgentGraph()
         for node_cfg in config.nodes:
-            model = node_cfg.model or os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-            llm = GroqProvider(api_key=api_key, model=model)
+            model = node_cfg.model or os.environ.get("OLLAMA_MODEL", "llama3:8b")
+            llm = OllamaProvider(model=model)
             agent_cfg = AgentConfig(
                 name=node_cfg.name,
                 system_prompt=node_cfg.system_prompt,

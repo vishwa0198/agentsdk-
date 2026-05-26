@@ -1,11 +1,11 @@
 """tests/test_integration.py
 
-Integration tests against the real Groq API.
+Integration tests against the local Ollama server.
 
 Run with:
     pytest tests/test_integration.py -v -m integration
 
-Skipped automatically when GROQ_API_KEY is not set.
+Requires Ollama to be running: ollama serve
 """
 
 from __future__ import annotations
@@ -14,8 +14,7 @@ import os
 
 import pytest
 
-groq_key = os.environ.get("GROQ_API_KEY")
-pytestmark = pytest.mark.skipif(not groq_key, reason="GROQ_API_KEY not set")
+pytestmark = pytest.mark.integration
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +23,7 @@ pytestmark = pytest.mark.skipif(not groq_key, reason="GROQ_API_KEY not set")
 
 
 def _agent(system_prompt: str, tools=None, registry=None):
-    from agentsdk import Agent, AgentConfig, GroqProvider
+    from agentsdk import Agent, AgentConfig, OllamaProvider
 
     return Agent(
         config=AgentConfig(
@@ -32,7 +31,7 @@ def _agent(system_prompt: str, tools=None, registry=None):
             system_prompt=system_prompt,
             max_iterations=5,
         ),
-        llm=GroqProvider(api_key=groq_key),
+        llm=OllamaProvider(),
         tools=tools,
         registry=registry,
     )
@@ -130,7 +129,7 @@ async def test_multi_turn_session():
     store = InMemoryCheckpointStore()
     session_mgr = SessionManager(store=store, agent_name="IntegrationAgent")
 
-    from agentsdk import Agent, AgentConfig, GroqProvider
+    from agentsdk import Agent, AgentConfig, OllamaProvider
 
     agent = Agent(
         config=AgentConfig(
@@ -138,7 +137,7 @@ async def test_multi_turn_session():
             system_prompt="You are a helpful assistant with memory.",
             max_iterations=3,
         ),
-        llm=GroqProvider(api_key=groq_key),
+        llm=OllamaProvider(),
         session_manager=session_mgr,
     )
 
@@ -156,10 +155,10 @@ async def test_multi_turn_session():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_agent_graph_two_nodes():
-    from agentsdk import Agent, AgentConfig, AgentGraph, AgentNode, Edge, GroqProvider
+    from agentsdk import Agent, AgentConfig, AgentGraph, AgentNode, Edge, OllamaProvider
     from agentsdk.graph.runner import GraphRunner
 
-    llm = GroqProvider(api_key=groq_key)
+    llm = OllamaProvider()
 
     researcher = Agent(
         config=AgentConfig(

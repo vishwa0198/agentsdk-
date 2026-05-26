@@ -43,7 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
-from agentsdk import Agent, AgentConfig, GroqProvider, FileCheckpointStore, SessionManager
+from agentsdk import Agent, AgentConfig, OllamaProvider, FileCheckpointStore, SessionManager
 
 from tools.custom_tools import custom_tools_registry
 
@@ -58,7 +58,7 @@ agent = Agent(
         system_prompt="You are a helpful assistant. Use the available tools when needed.",
         verbose=True,
     ),
-    llm=GroqProvider(api_key=os.environ["GROQ_API_KEY"]),
+    llm=OllamaProvider(),
     registry=custom_tools_registry,
     session_manager=_session_mgr,
 )
@@ -137,7 +137,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 '''
 
-_ENV_EXAMPLE = "GROQ_API_KEY=your_key_here\n"
+_ENV_EXAMPLE = "# No API key needed — Ollama runs locally.\n# Set OLLAMA_HOST to override the default http://localhost:11434\n# OLLAMA_HOST=http://localhost:11434\n"
 
 _REQUIREMENTS = "agentsdk[otel]\npython-dotenv\n"
 
@@ -148,7 +148,7 @@ An AI agent built with [agentsdk](https://github.com/agentsdk/agentsdk).
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and add your Groq API key.
+1. Start Ollama: ``ollama serve`` (and pull a model: ``ollama pull llama3:8b``).
 2. Install dependencies:
    ```
    pip install -r requirements.txt

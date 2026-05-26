@@ -19,7 +19,7 @@ import re
 import httpx
 from dotenv import load_dotenv
 
-from agentsdk import Agent, AgentConfig, GroqProvider
+from agentsdk import Agent, AgentConfig, OllamaProvider
 from agentsdk.memory.rag_memory import RAGMemory
 from agentsdk.memory.vector_store import VectorMemoryStore
 from agentsdk.messages import HumanMessage
@@ -138,8 +138,7 @@ Always cite your sources. Never make up facts."""
 def create_research_agent() -> Agent:
     """Build and return a fully configured ResearchAgent.
 
-    Loads ``GROQ_API_KEY`` from the ``.env`` file, overriding any stale
-    environment variable already set in the shell.
+    Requires Ollama to be running locally (``ollama serve``).
 
     Components created:
 
@@ -187,7 +186,7 @@ def create_research_agent() -> Agent:
     )
 
     # ── LLM ───────────────────────────────────────────────────────────────
-    llm = GroqProvider(api_key=os.environ["GROQ_API_KEY"])
+    llm = OllamaProvider()
 
     config = AgentConfig(
         name="ResearchAgent",

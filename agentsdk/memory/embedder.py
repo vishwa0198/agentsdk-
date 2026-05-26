@@ -4,8 +4,6 @@ Embedder abstraction for converting text into dense float vectors.
 
 Concrete implementations:
 - :class:`LocalEmbedder`  — sentence-transformers (all-MiniLM-L6-v2 default)
-- :class:`GroqEmbedder`   — stub; raises ``NotImplementedError`` until Groq ships
-                             a dedicated embedding endpoint.
 """
 
 from __future__ import annotations
@@ -83,29 +81,3 @@ class LocalEmbedder:
         self._load()
         vectors = self._model.encode(texts, convert_to_numpy=True)
         return [v.tolist() for v in vectors]
-
-
-# ---------------------------------------------------------------------------
-# GroqEmbedder — placeholder for future Groq embedding endpoint
-# ---------------------------------------------------------------------------
-
-
-class GroqEmbedder:
-    """Stub embedder for a future Groq dedicated embedding model.
-
-    Raises :exc:`NotImplementedError` on every call.  Replace this
-    implementation once Groq ships an embeddings API endpoint.
-
-    Args:
-        model: Reserved for future use.
-    """
-
-    def __init__(self, model: str = "groq-embed-v1") -> None:
-        self._model = model
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        raise NotImplementedError(
-            "Switch to dedicated embedding model. "
-            "Use LocalEmbedder or another provider until Groq ships "
-            "a native embedding endpoint."
-        )
